@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #0b1320;
+  background-color: #eff6ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: 'Sora', sans-serif;
+  color: #0b1320;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #dbeafe, transparent),
+    radial-gradient(900px 450px at 100% 0%, #bae6fd, transparent),
+    linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+html,
+body {
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+.night-mode body {
+  color: #e2e8f0;
+  background:
+    radial-gradient(1100px 550px at 20% -10%, #1e293b, transparent),
+    radial-gradient(900px 450px at 100% 0%, #0f172a, transparent),
+    linear-gradient(180deg, #020617 0%, #0b1120 100%);
+}
+
+.night-mode .bg-white\/85 {
+  background-color: rgb(15 23 42 / 0.82) !important;
+}
+
+.night-mode .bg-white {
+  background-color: #0f172a !important;
+}
+
+.night-mode .bg-slate-50 {
+  background-color: #111827 !important;
+}
+
+.night-mode .bg-slate-100 {
+  background-color: #1f2937 !important;
+}
+
+.night-mode .border-slate-200\/80 {
+  border-color: rgb(71 85 105 / 0.8) !important;
+}
+
+.night-mode .border-slate-200,
+.night-mode .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+.night-mode .text-ink,
+.night-mode .text-slate-700 {
+  color: #ffffff !important;
+}
+
+.night-mode .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.night-mode .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+.night-mode input,
+.night-mode select,
+.night-mode textarea {
+  background-color: #111827;
+  color: #e2e8f0;
+}
+
+.night-mode input::placeholder,
+.night-mode textarea::placeholder {
+  color: #94a3b8;
+}

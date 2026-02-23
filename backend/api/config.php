@@ -1,0 +1,14 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app_env' => getenv('APP_ENV') ?: 'dev',
+    'db_host' => getenv('DB_HOST') ?: '127.0.0.1',
+    'db_name' => getenv('DB_NAME') ?: 'exam_scanner',
+    'db_user' => getenv('DB_USER') ?: 'root',
+    'db_pass' => getenv('DB_PASS') ?: '',
+    'db_port' => (int) (getenv('DB_PORT') ?: 3306),
+    'scanner_service_url' => getenv('SCANNER_SERVICE_URL') ?: 'http://127.0.0.1:5001',
+    'cors_origin' => getenv('CORS_ORIGIN') ?: 'http://localhost:5173',
+];
