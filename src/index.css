@@ -6,22 +6,27 @@
 
 :root {
   color: #0b1320;
-  background-color: #eff6ff;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  font-family: 'Sora', sans-serif;
-  color: #0b1320;
+html {
+  min-height: 100%;
   background:
     radial-gradient(1200px 600px at 20% -10%, #dbeafe, transparent),
     radial-gradient(900px 450px at 100% 0%, #bae6fd, transparent),
     linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-width: 320px;
+  font-family: 'Sora', sans-serif;
+  color: #0b1320;
+  background: transparent;
 }
 
 #root {
@@ -33,20 +38,34 @@ body {
   transition: background 0.25s ease, color 0.25s ease;
 }
 
-.night-mode body {
-  color: #e2e8f0;
+.night-mode {
   background:
     radial-gradient(1100px 550px at 20% -10%, #1e293b, transparent),
     radial-gradient(900px 450px at 100% 0%, #0f172a, transparent),
     linear-gradient(180deg, #020617 0%, #0b1120 100%);
 }
 
+.night-mode body {
+  color: #e2e8f0;
+  background: transparent;
+}
+
 .night-mode .bg-white\/85 {
   background-color: rgb(15 23 42 / 0.82) !important;
 }
 
+.night-mode .bg-white\/90,
+.night-mode .bg-white\/80,
+.night-mode .bg-white\/60 {
+  background-color: rgb(15 23 42 / 0.9) !important;
+}
+
 .night-mode .bg-white {
   background-color: #0f172a !important;
+}
+
+.night-mode .bg-slate-50\/60 {
+  background-color: rgb(17 24 39 / 0.9) !important;
 }
 
 .night-mode .bg-slate-50 {
@@ -57,8 +76,16 @@ body {
   background-color: #1f2937 !important;
 }
 
+.night-mode .bg-slate-200 {
+  background-color: #334155 !important;
+}
+
 .night-mode .border-slate-200\/80 {
   border-color: rgb(71 85 105 / 0.8) !important;
+}
+
+.night-mode .border-slate-100 {
+  border-color: #1e293b !important;
 }
 
 .night-mode .border-slate-200,
@@ -67,7 +94,9 @@ body {
 }
 
 .night-mode .text-ink,
-.night-mode .text-slate-700 {
+.night-mode .text-slate-700,
+.night-mode .text-slate-800,
+.night-mode .text-slate-900 {
   color: #ffffff !important;
 }
 
@@ -77,6 +106,56 @@ body {
 
 .night-mode .text-slate-500 {
   color: #94a3b8 !important;
+}
+
+.night-mode .text-slate-400 {
+  color: #cbd5e1 !important;
+}
+
+.night-mode .text-slate-300 {
+  color: #e2e8f0 !important;
+}
+
+.night-mode .bg-brand-50,
+.night-mode .bg-brand-50\/50,
+.night-mode .bg-brand-50\/40 {
+  background-color: rgb(14 116 144 / 0.22) !important;
+}
+
+.night-mode .bg-brand-100 {
+  background-color: rgb(14 116 144 / 0.32) !important;
+}
+
+.night-mode .border-brand-200,
+.night-mode .border-brand-300 {
+  border-color: rgb(125 211 252 / 0.45) !important;
+}
+
+.night-mode .text-brand-500,
+.night-mode .text-brand-600,
+.night-mode .text-brand-700,
+.night-mode .text-brand-800 {
+  color: #7dd3fc !important;
+}
+
+.night-mode .bg-emerald-50 {
+  background-color: rgb(5 150 105 / 0.2) !important;
+}
+
+.night-mode .bg-emerald-100 {
+  background-color: rgb(5 150 105 / 0.3) !important;
+}
+
+.night-mode .border-emerald-200,
+.night-mode .border-emerald-100 {
+  border-color: rgb(52 211 153 / 0.45) !important;
+}
+
+.night-mode .text-emerald-500,
+.night-mode .text-emerald-600,
+.night-mode .text-emerald-700,
+.night-mode .text-emerald-700\/80 {
+  color: #6ee7b7 !important;
 }
 
 .night-mode input,
@@ -89,4 +168,36 @@ body {
 .night-mode input::placeholder,
 .night-mode textarea::placeholder {
   color: #94a3b8;
+}
+
+.night-mode .scan-last-card-ok {
+  background-color: rgb(6 78 59 / 0.32) !important;
+  border-color: rgb(52 211 153 / 0.55) !important;
+}
+
+.night-mode .scan-last-card-flagged {
+  background-color: rgb(120 53 15 / 0.34) !important;
+  border-color: rgb(245 158 11 / 0.6) !important;
+}
+
+.night-mode .scan-last-label,
+.night-mode .scan-last-score {
+  color: #cbd5e1 !important;
+}
+
+.night-mode .scan-last-name,
+.night-mode .scan-review-student-name {
+  color: #f8fafc !important;
+}
+
+.night-mode .scan-last-flag {
+  color: #fbbf24 !important;
+}
+
+.night-mode .scan-review-row-flagged {
+  background-color: rgb(120 53 15 / 0.2) !important;
+}
+
+.night-mode .scan-review-row-flagged .scan-review-student-code {
+  color: #e2e8f0 !important;
 }

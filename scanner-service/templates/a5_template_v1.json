@@ -1,0 +1,1001 @@
+{
+  "template_version": "A5_TEMPLATE_V1",
+  "blank_reference_frame": "canonical_anchors",
+  "canonical_size": [
+    1754,
+    2480
+  ],
+  "source_blank_scan": "C:\\Users\\USER\\Downloads\\exam-template(4)-scanned.png",
+  "raw_size": [
+    1754,
+    2480
+  ],
+  "raw_anchors": [
+    {
+      "center": [
+        1698.5,
+        2428.0
+      ],
+      "bbox": [
+        1658,
+        2391,
+        81,
+        74
+      ],
+      "area": 5701.0,
+      "fill_ratio": 0.9511
+    },
+    {
+      "center": [
+        72.0,
+        2413.0
+      ],
+      "bbox": [
+        32,
+        2378,
+        80,
+        70
+      ],
+      "area": 5405.0,
+      "fill_ratio": 0.9652
+    },
+    {
+      "center": [
+        1700.0,
+        1231.5
+      ],
+      "bbox": [
+        1660,
+        1192,
+        80,
+        79
+      ],
+      "area": 6139.5,
+      "fill_ratio": 0.9714
+    },
+    {
+      "center": [
+        73.5,
+        1227.5
+      ],
+      "bbox": [
+        33,
+        1187,
+        81,
+        81
+      ],
+      "area": 6185.0,
+      "fill_ratio": 0.9427
+    },
+    {
+      "center": [
+        1702.5,
+        151.5
+      ],
+      "bbox": [
+        1663,
+        112,
+        79,
+        79
+      ],
+      "area": 6078.5,
+      "fill_ratio": 0.974
+    },
+    {
+      "center": [
+        1703.0,
+        55.0
+      ],
+      "bbox": [
+        1663,
+        21,
+        80,
+        68
+      ],
+      "area": 5137.0,
+      "fill_ratio": 0.9443
+    },
+    {
+      "center": [
+        1602.0,
+        53.5
+      ],
+      "bbox": [
+        1561,
+        20,
+        82,
+        67
+      ],
+      "area": 5192.0,
+      "fill_ratio": 0.945
+    },
+    {
+      "center": [
+        75.0,
+        42.5
+      ],
+      "bbox": [
+        35,
+        9,
+        80,
+        67
+      ],
+      "area": 5178.5,
+      "fill_ratio": 0.9661
+    }
+  ],
+  "anchors": [
+    {
+      "center": [
+        1753.0,
+        2479.0
+      ],
+      "bbox": [
+        1658,
+        2391,
+        81,
+        74
+      ],
+      "area": 5701.0,
+      "fill_ratio": 0.9511
+    },
+    {
+      "center": [
+        0.0,
+        2479.0
+      ],
+      "bbox": [
+        32,
+        2378,
+        80,
+        70
+      ],
+      "area": 5405.0,
+      "fill_ratio": 0.9652
+    },
+    {
+      "center": [
+        1752.17,
+        1228.49
+      ],
+      "bbox": [
+        1660,
+        1192,
+        80,
+        79
+      ],
+      "area": 6139.5,
+      "fill_ratio": 0.9714
+    },
+    {
+      "center": [
+        -0.0,
+        1238.67
+      ],
+      "bbox": [
+        33,
+        1187,
+        81,
+        81
+      ],
+      "area": 6185.0,
+      "fill_ratio": 0.9427
+    },
+    {
+      "center": [
+        1752.66,
+        100.72
+      ],
+      "bbox": [
+        1663,
+        112,
+        79,
+        79
+      ],
+      "area": 6078.5,
+      "fill_ratio": 0.974
+    },
+    {
+      "center": [
+        1753.0,
+        0.0
+      ],
+      "bbox": [
+        1663,
+        21,
+        80,
+        68
+      ],
+      "area": 5137.0,
+      "fill_ratio": 0.9443
+    },
+    {
+      "center": [
+        1644.35,
+        -0.76
+      ],
+      "bbox": [
+        1561,
+        20,
+        82,
+        67
+      ],
+      "area": 5192.0,
+      "fill_ratio": 0.945
+    },
+    {
+      "center": [
+        0.0,
+        -0.0
+      ],
+      "bbox": [
+        35,
+        9,
+        80,
+        67
+      ],
+      "area": 5178.5,
+      "fill_ratio": 0.9661
+    }
+  ],
+  "sections": {
+    "student_code": {
+      "x_centers": [
+        270.75,
+        359.39,
+        448.24,
+        545.36,
+        633.73,
+        722.32
+      ],
+      "y_centers": [
+        329.99,
+        390.2,
+        448.52,
+        508.37,
+        569.17,
+        628.64,
+        688.39,
+        747.75,
+        807.37,
+        867.29
+      ],
+      "y_origin": 329.99,
+      "cols": 6,
+      "rows": 10,
+      "y_pitch": 59.751,
+      "bubble_radius": 18,
+      "x_pitch": 88.64,
+      "registration_method": "bubble_lattice"
+    },
+    "exam_code": {
+      "x_centers": [
+        1029.51,
+        1117.99,
+        1206.27,
+        1302.93,
+        1391.29,
+        1480.19
+      ],
+      "y_centers": [
+        327.61,
+        386.52,
+        444.19,
+        502.45,
+        566.05,
+        622.38,
+        681.3,
+        740.01,
+        799.58,
+        862.72
+      ],
+      "y_origin": 327.61,
+      "cols": 6,
+      "rows": 10,
+      "y_pitch": 58.91,
+      "bubble_radius": 18,
+      "x_pitch": 88.479,
+      "registration_method": "bubble_lattice"
+    },
+    "answers_left": {
+      "origin_center": [
+        473,
+        1047
+      ],
+      "x_centers": [
+        475.13,
+        553.09,
+        631.21,
+        708.46
+      ],
+      "y_centers": [
+        1040.54,
+        1131.31,
+        1221.61,
+        1312.33,
+        1403.56,
+        1493.79,
+        1579.74,
+        1669.59,
+        1753.97,
+        1841.69,
+        1927.99,
+        2010.64,
+        2096.84,
+        2187.01,
+        2269.78
+      ],
+      "y_origin": 1040.54,
+      "rows": 15,
+      "cols": 4,
+      "x_pitch": 77.965,
+      "y_pitch": 88.78,
+      "bubble_radius": 22,
+      "registration_method": "bubble_lattice"
+    },
+    "answers_right": {
+      "origin_center": [
+        1141,
+        1043
+      ],
+      "x_centers": [
+        1141.58,
+        1219.8,
+        1297.96,
+        1375.23
+      ],
+      "y_centers": [
+        1031.21,
+        1122.54,
+        1212.93,
+        1303.49,
+        1395.48,
+        1485.76,
+        1572.42,
+        1660.77,
+        1746.28,
+        1833.64,
+        1919.91,
+        2003.1,
+        2090.01,
+        2179.79,
+        2263.57
+      ],
+      "y_origin": 1031.21,
+      "rows": 15,
+      "cols": 4,
+      "x_pitch": 78.156,
+      "y_pitch": 87.855,
+      "bubble_radius": 22,
+      "registration_method": "bubble_lattice"
+    }
+  },
+  "section_registration": {
+    "student_code": {
+      "section": "student_code",
+      "method": "bubble_lattice",
+      "roi": [
+        170,
+        300,
+        830,
+        940
+      ],
+      "candidate_count": 69,
+      "coverage": 1.0,
+      "x_centers": [
+        270.75,
+        359.39,
+        448.24,
+        545.36,
+        633.73,
+        722.32
+      ],
+      "y_centers": [
+        329.99,
+        390.2,
+        448.52,
+        508.37,
+        569.17,
+        628.64,
+        688.39,
+        747.75,
+        807.37,
+        867.29
+      ],
+      "x_pitch": 88.64,
+      "y_pitch": 59.751,
+      "local_offsets": {
+        "x_first": -1.067,
+        "x_last": -0.558,
+        "y_first": -6.081,
+        "y_last": -5.096
+      },
+      "x_clusters": [
+        {
+          "center": 270.75,
+          "count": 11
+        },
+        {
+          "center": 359.39,
+          "count": 15
+        },
+        {
+          "center": 448.24,
+          "count": 13
+        },
+        {
+          "center": 545.36,
+          "count": 10
+        },
+        {
+          "center": 633.73,
+          "count": 10
+        },
+        {
+          "center": 722.32,
+          "count": 10
+        }
+      ],
+      "y_clusters": [
+        {
+          "center": 329.99,
+          "count": 7
+        },
+        {
+          "center": 390.2,
+          "count": 6
+        },
+        {
+          "center": 448.52,
+          "count": 6
+        },
+        {
+          "center": 508.37,
+          "count": 6
+        },
+        {
+          "center": 569.17,
+          "count": 7
+        },
+        {
+          "center": 628.64,
+          "count": 7
+        },
+        {
+          "center": 688.39,
+          "count": 7
+        },
+        {
+          "center": 747.75,
+          "count": 6
+        },
+        {
+          "center": 807.37,
+          "count": 8
+        },
+        {
+          "center": 867.29,
+          "count": 9
+        }
+      ]
+    },
+    "exam_code": {
+      "section": "exam_code",
+      "method": "bubble_lattice",
+      "roi": [
+        900,
+        300,
+        1680,
+        940
+      ],
+      "candidate_count": 73,
+      "coverage": 1.0,
+      "x_centers": [
+        1029.51,
+        1117.99,
+        1206.27,
+        1302.93,
+        1391.29,
+        1480.19
+      ],
+      "y_centers": [
+        327.61,
+        386.52,
+        444.19,
+        502.45,
+        566.05,
+        622.38,
+        681.3,
+        740.01,
+        799.58,
+        862.72
+      ],
+      "x_pitch": 88.479,
+      "y_pitch": 58.91,
+      "local_offsets": {
+        "x_first": -1.112,
+        "x_last": -0.821,
+        "y_first": -7.957,
+        "y_last": -6.559
+      },
+      "x_clusters": [
+        {
+          "center": 1029.51,
+          "count": 13
+        },
+        {
+          "center": 1117.99,
+          "count": 13
+        },
+        {
+          "center": 1206.27,
+          "count": 12
+        },
+        {
+          "center": 1302.93,
+          "count": 12
+        },
+        {
+          "center": 1391.29,
+          "count": 10
+        },
+        {
+          "center": 1480.19,
+          "count": 13
+        }
+      ],
+      "y_clusters": [
+        {
+          "center": 327.61,
+          "count": 8
+        },
+        {
+          "center": 386.52,
+          "count": 6
+        },
+        {
+          "center": 444.19,
+          "count": 6
+        },
+        {
+          "center": 502.45,
+          "count": 6
+        },
+        {
+          "center": 566.05,
+          "count": 8
+        },
+        {
+          "center": 622.38,
+          "count": 6
+        },
+        {
+          "center": 681.3,
+          "count": 10
+        },
+        {
+          "center": 740.01,
+          "count": 6
+        },
+        {
+          "center": 799.58,
+          "count": 8
+        },
+        {
+          "center": 862.72,
+          "count": 9
+        }
+      ]
+    },
+    "answers_left": {
+      "section": "answers_left",
+      "method": "bubble_lattice",
+      "roi": [
+        420,
+        980,
+        820,
+        2350
+      ],
+      "candidate_count": 66,
+      "coverage": 1.0,
+      "x_centers": [
+        475.13,
+        553.09,
+        631.21,
+        708.46
+      ],
+      "y_centers": [
+        1040.54,
+        1131.31,
+        1221.61,
+        1312.33,
+        1403.56,
+        1493.79,
+        1579.74,
+        1669.59,
+        1753.97,
+        1841.69,
+        1927.99,
+        2010.64,
+        2096.84,
+        2187.01,
+        2269.78
+      ],
+      "x_pitch": 77.965,
+      "y_pitch": 88.78,
+      "local_offsets": {
+        "x_first": 1.778,
+        "x_last": 1.245,
+        "y_first": -6.173,
+        "y_last": 1.684
+      },
+      "x_clusters": [
+        {
+          "center": 430.45,
+          "count": 6
+        },
+        {
+          "center": 475.13,
+          "count": 15
+        },
+        {
+          "center": 553.09,
+          "count": 15
+        },
+        {
+          "center": 631.21,
+          "count": 15
+        },
+        {
+          "center": 708.46,
+          "count": 15
+        }
+      ],
+      "y_clusters": [
+        {
+          "center": 1040.54,
+          "count": 4
+        },
+        {
+          "center": 1087.86,
+          "count": 1
+        },
+        {
+          "center": 1131.31,
+          "count": 4
+        },
+        {
+          "center": 1177.92,
+          "count": 1
+        },
+        {
+          "center": 1221.61,
+          "count": 4
+        },
+        {
+          "center": 1312.33,
+          "count": 4
+        },
+        {
+          "center": 1403.56,
+          "count": 4
+        },
+        {
+          "center": 1493.79,
+          "count": 4
+        },
+        {
+          "center": 1579.74,
+          "count": 4
+        },
+        {
+          "center": 1669.59,
+          "count": 4
+        },
+        {
+          "center": 1753.97,
+          "count": 5
+        },
+        {
+          "center": 1841.69,
+          "count": 5
+        },
+        {
+          "center": 1927.99,
+          "count": 4
+        },
+        {
+          "center": 2010.64,
+          "count": 4
+        },
+        {
+          "center": 2096.84,
+          "count": 5
+        },
+        {
+          "center": 2187.01,
+          "count": 4
+        },
+        {
+          "center": 2269.78,
+          "count": 4
+        },
+        {
+          "center": 2317.99,
+          "count": 1
+        }
+      ]
+    },
+    "answers_right": {
+      "section": "answers_right",
+      "method": "bubble_lattice",
+      "roi": [
+        1090,
+        970,
+        1560,
+        2380
+      ],
+      "candidate_count": 60,
+      "coverage": 1.0,
+      "x_centers": [
+        1141.58,
+        1219.8,
+        1297.96,
+        1375.23
+      ],
+      "y_centers": [
+        1031.21,
+        1122.54,
+        1212.93,
+        1303.49,
+        1395.48,
+        1485.76,
+        1572.42,
+        1660.77,
+        1746.28,
+        1833.64,
+        1919.91,
+        2003.1,
+        2090.01,
+        2179.79,
+        2263.57
+      ],
+      "x_pitch": 78.156,
+      "y_pitch": 87.855,
+      "local_offsets": {
+        "x_first": 0.77,
+        "x_last": 0.418,
+        "y_first": -12.243,
+        "y_last": -1.233
+      },
+      "x_clusters": [
+        {
+          "center": 1141.58,
+          "count": 15
+        },
+        {
+          "center": 1219.8,
+          "count": 15
+        },
+        {
+          "center": 1297.96,
+          "count": 15
+        },
+        {
+          "center": 1375.23,
+          "count": 15
+        }
+      ],
+      "y_clusters": [
+        {
+          "center": 1031.21,
+          "count": 4
+        },
+        {
+          "center": 1122.54,
+          "count": 4
+        },
+        {
+          "center": 1212.93,
+          "count": 4
+        },
+        {
+          "center": 1303.49,
+          "count": 4
+        },
+        {
+          "center": 1395.48,
+          "count": 4
+        },
+        {
+          "center": 1485.76,
+          "count": 4
+        },
+        {
+          "center": 1572.42,
+          "count": 4
+        },
+        {
+          "center": 1660.77,
+          "count": 4
+        },
+        {
+          "center": 1746.28,
+          "count": 4
+        },
+        {
+          "center": 1833.64,
+          "count": 4
+        },
+        {
+          "center": 1919.91,
+          "count": 4
+        },
+        {
+          "center": 2003.1,
+          "count": 4
+        },
+        {
+          "center": 2090.01,
+          "count": 4
+        },
+        {
+          "center": 2179.79,
+          "count": 4
+        },
+        {
+          "center": 2263.57,
+          "count": 4
+        }
+      ]
+    }
+  },
+  "normalization_debug": {
+    "canonical_size": [
+      1754,
+      2480
+    ],
+    "raw_size": [
+      1754,
+      2480
+    ],
+    "registration_mark_method": "standard",
+    "mark_candidates": [
+      {
+        "center": [
+          1698.5,
+          2428.0
+        ],
+        "bbox": [
+          1658,
+          2391,
+          81,
+          74
+        ],
+        "area": 5701.0,
+        "fill_ratio": 0.951
+      },
+      {
+        "center": [
+          72.0,
+          2413.0
+        ],
+        "bbox": [
+          32,
+          2378,
+          80,
+          70
+        ],
+        "area": 5405.0,
+        "fill_ratio": 0.965
+      },
+      {
+        "center": [
+          1700.0,
+          1231.5
+        ],
+        "bbox": [
+          1660,
+          1192,
+          80,
+          79
+        ],
+        "area": 6139.5,
+        "fill_ratio": 0.971
+      },
+      {
+        "center": [
+          73.5,
+          1227.5
+        ],
+        "bbox": [
+          33,
+          1187,
+          81,
+          81
+        ],
+        "area": 6185.0,
+        "fill_ratio": 0.943
+      },
+      {
+        "center": [
+          1702.5,
+          151.5
+        ],
+        "bbox": [
+          1663,
+          112,
+          79,
+          79
+        ],
+        "area": 6078.5,
+        "fill_ratio": 0.974
+      },
+      {
+        "center": [
+          1703.0,
+          55.0
+        ],
+        "bbox": [
+          1663,
+          21,
+          80,
+          68
+        ],
+        "area": 5137.0,
+        "fill_ratio": 0.944
+      },
+      {
+        "center": [
+          1602.0,
+          53.5
+        ],
+        "bbox": [
+          1561,
+          20,
+          82,
+          67
+        ],
+        "area": 5192.0,
+        "fill_ratio": 0.945
+      },
+      {
+        "center": [
+          75.0,
+          42.5
+        ],
+        "bbox": [
+          35,
+          9,
+          80,
+          67
+        ],
+        "area": 5178.5,
+        "fill_ratio": 0.966
+      }
+    ],
+    "corner_centers": {
+      "tl": [
+        75.0,
+        42.5
+      ],
+      "tr": [
+        1703.0,
+        55.0
+      ],
+      "br": [
+        1698.5,
+        2428.0
+      ],
+      "bl": [
+        72.0,
+        2413.0
+      ]
+    },
+    "template_version": "A5_TEMPLATE_V1",
+    "template_profile_loaded": false,
+    "page_registration_method": "four_corner_marks",
+    "page_registration_confidence": null,
+    "anchor_matches": []
+  }
+}

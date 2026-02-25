@@ -23,6 +23,13 @@ dist-ssr
 *.sln
 *.sw?
 
+<<<<<<< HEAD
 .env
 scanner-service/scans/exam_1_20260225_121657.txt
 
+=======
+# Scanner service generated scan outputs
+scanner-service/scans/
+
+.claude/
+>>>>>>> b3e02cd4a0f9a3e6e78eecc630e79a7f19d18491
