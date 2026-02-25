@@ -6,22 +6,27 @@
 
 :root {
   color: #0b1320;
-  background-color: #eff6ff;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  font-family: 'Sora', sans-serif;
-  color: #0b1320;
+html {
+  min-height: 100%;
   background:
     radial-gradient(1200px 600px at 20% -10%, #dbeafe, transparent),
     radial-gradient(900px 450px at 100% 0%, #bae6fd, transparent),
     linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-width: 320px;
+  font-family: 'Sora', sans-serif;
+  color: #0b1320;
+  background: transparent;
 }
 
 #root {
@@ -33,12 +38,16 @@ body {
   transition: background 0.25s ease, color 0.25s ease;
 }
 
-.night-mode body {
-  color: #e2e8f0;
+.night-mode {
   background:
     radial-gradient(1100px 550px at 20% -10%, #1e293b, transparent),
     radial-gradient(900px 450px at 100% 0%, #0f172a, transparent),
     linear-gradient(180deg, #020617 0%, #0b1120 100%);
+}
+
+.night-mode body {
+  color: #e2e8f0;
+  background: transparent;
 }
 
 .night-mode .bg-white\/85 {

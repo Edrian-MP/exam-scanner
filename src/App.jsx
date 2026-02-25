@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { API_BASE, apiGet, apiPost } from './lib/api'
-
-const NIGHT_MODE_STORAGE_KEY = 'exam_scanner_night_mode'
+import LmsDashboard from './LmsDashboard'
+import useAnswerGrid from './hooks/useAnswerGrid'
 
 const defaultExam = {
   title: '',
@@ -12,11 +12,6 @@ const defaultExam = {
 }
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc
-
-function scorePercent(score, total) {
-  if (!total) return 0
-  return Math.round((score / total) * 100)
-}
 
 function createEmptyItems(total) {
   const parsed = Number(total)
@@ -122,13 +117,6 @@ async function extractPdfTextWithPdfJs(file) {
 }
 
 function App() {
-  const [nightMode, setNightMode] = useState(() => {
-    if (typeof window === 'undefined') return false
-    const stored = window.localStorage.getItem(NIGHT_MODE_STORAGE_KEY)
-    if (stored === 'true') return true
-    if (stored === 'false') return false
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
-  })
   const [health, setHealth] = useState(null)
   const [scanner, setScanner] = useState(null)
   const [exams, setExams] = useState([])
@@ -149,57 +137,19 @@ function App() {
     () => exams.find((exam) => String(exam.id) === String(gradeForm.exam_id)) || null,
     [exams, gradeForm.exam_id]
   )
-  const answerKeyDisplay = useMemo(
-    () => answerKeyItems.map((val, i) => `${i + 1}. ${val}`).join('\n'),
-    [answerKeyItems]
-  )
-  const gradeAnswersDisplay = useMemo(
-    () => gradeAnswerItems.map((val, i) => `${i + 1}. ${val}`).join('\n'),
-    [gradeAnswerItems]
-  )
 
-  function getLineIndexFromCursor(ref, display, itemCount) {
-    if (itemCount <= 0) return 0
-    const el = ref.current
-    if (!el) return 0
-    const before = display.slice(0, el.selectionStart)
-    return Math.min(itemCount - 1, before.split('\n').length - 1)
-  }
-
-  function setCursorToLine(ref, lineIndex, items) {
-    const el = ref.current
-    if (!el) return
-    if (!items.length) return
-    const safeLine = Math.max(0, Math.min(lineIndex, items.length - 1))
-    let pos = 0
-    for (let i = 0; i < safeLine; i++) {
-      const prefix = `${i + 1}. `
-      pos += prefix.length + `${items[i]}`.length + 1
-    }
-    // Place cursor after the prefix on the target line
-    const targetPrefix = `${safeLine + 1}. `
-    pos += targetPrefix.length
-    requestAnimationFrame(() => {
-      el.setSelectionRange(pos, pos)
-
-      // Auto-scroll with one-line context above/below the active line.
-      const computedStyle = window.getComputedStyle(el)
-      const lineHeight = Number.parseInt(computedStyle.lineHeight, 10) || 20
-      const paddingTop = Number.parseInt(computedStyle.paddingTop, 10) || 8
-
-      const lineTop = safeLine * lineHeight + paddingTop
-      const lineBottom = lineTop + lineHeight
-
-      const visibleTop = el.scrollTop
-      const visibleBottom = el.scrollTop + el.clientHeight
-
-      if (lineBottom > visibleBottom) {
-        el.scrollTop = lineBottom - el.clientHeight + lineHeight
-      } else if (lineTop < visibleTop) {
-        el.scrollTop = lineTop - lineHeight
-      }
-    })
-  }
+  const answerKeyGrid = useAnswerGrid({
+    items: answerKeyItems,
+    setItems: setAnswerKeyItems,
+    ref: answerKeyRef,
+    normalizeItem,
+  })
+  const gradeAnswersGrid = useAnswerGrid({
+    items: gradeAnswerItems,
+    setItems: setGradeAnswerItems,
+    ref: gradeAnswersRef,
+    normalizeItem,
+  })
 
   async function bootstrap() {
     setError('')
@@ -225,11 +175,6 @@ function App() {
   useEffect(() => {
     bootstrap()
   }, [])
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('night-mode', nightMode)
-    window.localStorage.setItem(NIGHT_MODE_STORAGE_KEY, String(nightMode))
-  }, [nightMode])
 
   useEffect(() => {
     const total = Number(selectedGradeExam?.total_items || 0)
@@ -368,416 +313,40 @@ function App() {
     setPdfImportStatus(nextStatus.join(' | '))
   }
 
-  function onAnswerKeyKeyDown(e) {
-    if (!answerKeyItems.length) return
-    const { key } = e
-    const line = getLineIndexFromCursor(answerKeyRef, answerKeyDisplay, answerKeyItems.length)
-    const current = answerKeyItems[line] || ''
-
-    if (key === 'ArrowUp') {
-      e.preventDefault()
-      setCursorToLine(answerKeyRef, line - 1, answerKeyItems)
-      return
-    }
-    if (key === 'ArrowDown' || key === 'Enter') {
-      e.preventDefault()
-      setCursorToLine(answerKeyRef, line + 1, answerKeyItems)
-      return
-    }
-    if (key === 'Backspace' || key === 'Delete') {
-      e.preventDefault()
-      setAnswerKeyItems((prev) => {
-        const next = [...prev]
-        next[line] = ''
-        return next
-      })
-      setCursorToLine(answerKeyRef, line, answerKeyItems)
-      return
-    }
-    if (key === '/') {
-      e.preventDefault()
-      if (/^[A-Z]$/.test(current)) {
-        setAnswerKeyItems((prev) => {
-          const next = [...prev]
-          next[line] = `${current}/`
-          return next
-        })
-        setCursorToLine(answerKeyRef, line, answerKeyItems)
-        return
-      }
-      if (current === '' && line > 0 && /^[A-Z]$/.test(answerKeyItems[line - 1] || '')) {
-        setAnswerKeyItems((prev) => {
-          const next = [...prev]
-          next[line - 1] = `${next[line - 1]}/`
-          return next
-        })
-        setCursorToLine(answerKeyRef, line - 1, answerKeyItems)
-        return
-      }
-      return
-    }
-    if (/^[a-zA-Z]$/.test(key)) {
-      e.preventDefault()
-      const upper = key.toUpperCase()
-      setAnswerKeyItems((prev) => {
-        const next = [...prev]
-        const lineValue = next[line] || ''
-        if (lineValue.endsWith('/')) {
-          next[line] = `${lineValue}${upper}`
-        } else {
-          next[line] = upper
-        }
-        return next
-      })
-      setCursorToLine(answerKeyRef, line + 1, answerKeyItems)
-      return
-    }
-    if (key.length === 1) {
-      e.preventDefault()
-    }
-  }
-
-  function onAnswerKeyPaste(e) {
-    if (!answerKeyItems.length) return
-    e.preventDefault()
-    const raw = e.clipboardData.getData('text') || ''
-    if (!raw.trim()) return
-
-    const tokens = raw
-      .split(/\r?\n/)
-      .map((line) => line.replace(/^\s*\d+\s*[.)-]?\s*/, '').trim())
-      .map((line) => normalizeItem(line))
-      .filter(Boolean)
-
-    if (!tokens.length) return
-
-    const startLine = getLineIndexFromCursor(answerKeyRef, answerKeyDisplay, answerKeyItems.length)
-    setAnswerKeyItems((prev) => {
-      const next = [...prev]
-      for (let i = 0; i < tokens.length; i += 1) {
-        const idx = startLine + i
-        if (idx >= next.length) break
-        next[idx] = tokens[i]
-      }
-      return next
-    })
-    setCursorToLine(answerKeyRef, Math.min(startLine + tokens.length, answerKeyItems.length - 1), answerKeyItems)
-  }
-
-  function onGradeAnswersKeyDown(e) {
-    if (!gradeAnswerItems.length) return
-    const { key } = e
-    const line = getLineIndexFromCursor(gradeAnswersRef, gradeAnswersDisplay, gradeAnswerItems.length)
-    const current = gradeAnswerItems[line] || ''
-
-    if (key === 'ArrowUp') {
-      e.preventDefault()
-      setCursorToLine(gradeAnswersRef, line - 1, gradeAnswerItems)
-      return
-    }
-    if (key === 'ArrowDown' || key === 'Enter') {
-      e.preventDefault()
-      setCursorToLine(gradeAnswersRef, line + 1, gradeAnswerItems)
-      return
-    }
-    if (key === 'Backspace' || key === 'Delete') {
-      e.preventDefault()
-      setGradeAnswerItems((prev) => {
-        const next = [...prev]
-        next[line] = ''
-        return next
-      })
-      setCursorToLine(gradeAnswersRef, line, gradeAnswerItems)
-      return
-    }
-    if (key === '/') {
-      e.preventDefault()
-      if (/^[A-Z]$/.test(current)) {
-        setGradeAnswerItems((prev) => {
-          const next = [...prev]
-          next[line] = `${current}/`
-          return next
-        })
-        setCursorToLine(gradeAnswersRef, line, gradeAnswerItems)
-        return
-      }
-      if (current === '' && line > 0 && /^[A-Z]$/.test(gradeAnswerItems[line - 1] || '')) {
-        setGradeAnswerItems((prev) => {
-          const next = [...prev]
-          next[line - 1] = `${next[line - 1]}/`
-          return next
-        })
-        setCursorToLine(gradeAnswersRef, line - 1, gradeAnswerItems)
-        return
-      }
-      return
-    }
-    if (/^[a-zA-Z]$/.test(key)) {
-      e.preventDefault()
-      const upper = key.toUpperCase()
-      setGradeAnswerItems((prev) => {
-        const next = [...prev]
-        const lineValue = next[line] || ''
-        if (lineValue.endsWith('/')) {
-          next[line] = `${lineValue}${upper}`
-        } else {
-          next[line] = upper
-        }
-        return next
-      })
-      setCursorToLine(gradeAnswersRef, line + 1, gradeAnswerItems)
-      return
-    }
-    if (key.length === 1) {
-      e.preventDefault()
-    }
-  }
-
-  function onGradeAnswersPaste(e) {
-    if (!gradeAnswerItems.length) return
-    e.preventDefault()
-    const raw = e.clipboardData.getData('text') || ''
-    if (!raw.trim()) return
-
-    const tokens = raw
-      .split(/\r?\n/)
-      .map((line) => line.replace(/^\s*\d+\s*[.)-]?\s*/, '').trim())
-      .map((line) => normalizeItem(line))
-      .filter(Boolean)
-
-    if (!tokens.length) return
-
-    const startLine = getLineIndexFromCursor(gradeAnswersRef, gradeAnswersDisplay, gradeAnswerItems.length)
-    setGradeAnswerItems((prev) => {
-      const next = [...prev]
-      for (let i = 0; i < tokens.length; i += 1) {
-        const idx = startLine + i
-        if (idx >= next.length) break
-        next[idx] = tokens[i]
-      }
-      return next
-    })
-    setCursorToLine(gradeAnswersRef, Math.min(startLine + tokens.length, gradeAnswerItems.length - 1), gradeAnswerItems)
-  }
-
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <section className="rounded-3xl border border-slate-200/80 bg-white/85 p-6 shadow-panel backdrop-blur sm:p-8">
-        <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="inline-flex rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700">
-              Portable Exam Scanner and Automated Grading Terminal
-            </p>
-            <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-              Operations Console
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-600">
-              Create exams, trigger scanner jobs, and grade answer sheets from one interface.
-            </p>
-          </div>
-          <div className="flex flex-col items-start gap-2 md:items-end">
-            <button
-              type="button"
-              onClick={() => setNightMode((prev) => !prev)}
-              className="rounded-xl border border-slate-300 bg-white/90 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-            >
-              {nightMode ? 'Switch to day mode' : 'Switch to night mode'}
-            </button>
-            <div className="rounded-2xl bg-slate-900 px-4 py-3 text-xs text-slate-200">
-              <p>API base</p>
-              <p className="mt-1 font-mono text-[11px] text-cyan-300">{API_BASE}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {error ? (
-        <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
-      ) : null}
-
-      <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <article className="rounded-2xl bg-white p-4 shadow-panel">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Backend</p>
-          <p className="mt-2 text-lg font-semibold text-ink">{health?.ok ? 'Online' : 'Unknown'}</p>
-        </article>
-        <article className="rounded-2xl bg-white p-4 shadow-panel">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Database</p>
-          <p className="mt-2 text-lg font-semibold text-ink">{health?.db ? 'MySQL Ready' : 'Check DB'}</p>
-        </article>
-        <article className="rounded-2xl bg-white p-4 shadow-panel">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Scanner</p>
-          <p className="mt-2 text-lg font-semibold text-ink">
-            {scanner?.scanner?.connected ? 'Connected' : 'Offline'}
-          </p>
-        </article>
-        <article className="rounded-2xl bg-white p-4 shadow-panel">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Exam Templates</p>
-          <p className="mt-2 text-lg font-semibold text-ink">{exams.length}</p>
-        </article>
-      </section>
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-3">
-        <form onSubmit={onCreateExam} className="rounded-2xl bg-white p-5 shadow-panel">
-          <h2 className="font-display text-xl font-semibold">Create Exam Template</h2>
-          <div className="mt-4 space-y-3 text-sm">
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Upload Exam PDF (optional)
-              </label>
-              <input
-                type="file"
-                accept="application/pdf,.pdf"
-                onChange={onExamPdfUpload}
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700 focus:ring"
-              />
-              {pdfImportStatus ? <p className="mt-1 text-xs text-slate-600">{pdfImportStatus}</p> : null}
-            </div>
-            <input
-              required
-              value={examForm.title}
-              onChange={(e) => setExamForm((s) => ({ ...s, title: e.target.value }))}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 focus:ring"
-              placeholder="Course / Exam title"
-            />
-            <input
-              required
-              min={1}
-              max={200}
-              type="number"
-              value={examForm.total_items}
-              onChange={(e) => onTotalItemsChange(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 focus:ring"
-              placeholder="Total items"
-            />
-            <textarea
-              required
-              ref={answerKeyRef}
-              value={answerKeyDisplay}
-              onChange={() => {}}
-              onKeyDown={onAnswerKeyKeyDown}
-              onPaste={onAnswerKeyPaste}
-              className="h-28 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono outline-none ring-brand-500 focus:ring"
-              placeholder="A"
-            />
-            <button
-              disabled={busy}
-              className="w-full rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
-            >
-              Save Exam
-            </button>
-          </div>
-        </form>
-
-        <form onSubmit={onScan} className="rounded-2xl bg-white p-5 shadow-panel">
-          <h2 className="font-display text-xl font-semibold">Scanner Controls</h2>
-          <p className="mt-2 text-sm text-slate-600">
-            Starts a scan job via PHP API, which forwards to the local Python scan controller.
-          </p>
-          <div className="mt-4 space-y-3 text-sm">
-            <select
-              required
-              value={scanRequest.exam_id}
-              onChange={(e) => setScanRequest({ exam_id: e.target.value })}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 focus:ring"
-            >
-              <option value="">Select exam template</option>
-              {exams.map((exam) => (
-                <option key={exam.id} value={exam.id}>
-                  {exam.title}
-                </option>
-              ))}
-            </select>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-              <p className={scanner?.scanner?.connected ? 'text-emerald-700' : 'animate-pulseSoft text-amber-700'}>
-                Scanner status: {scanner?.scanner?.connected ? 'ready' : 'waiting for device'}
-              </p>
-              <p className="mt-1">Transport: {scanner?.transport || 'n/a'}</p>
-            </div>
-            <button
-              disabled={busy || !scanRequest.exam_id}
-              className="w-full rounded-xl bg-slate-900 px-4 py-2 font-semibold text-white transition hover:bg-slate-700 disabled:opacity-60"
-            >
-              Start Scan Job
-            </button>
-          </div>
-        </form>
-
-        <form onSubmit={onGrade} className="rounded-2xl bg-white p-5 shadow-panel">
-          <h2 className="font-display text-xl font-semibold">Manual/Parsed Submission</h2>
-          <div className="mt-4 space-y-3 text-sm">
-            <select
-              required
-              value={gradeForm.exam_id}
-              onChange={(e) => setGradeForm((s) => ({ ...s, exam_id: e.target.value }))}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 focus:ring"
-            >
-              <option value="">Select exam template</option>
-              {exams.map((exam) => (
-                <option key={exam.id} value={exam.id}>
-                  {exam.title}
-                </option>
-              ))}
-            </select>
-            <input
-              required
-              value={gradeForm.student_code}
-              onChange={(e) => setGradeForm((s) => ({ ...s, student_code: e.target.value }))}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none ring-brand-500 focus:ring"
-              placeholder="Student code"
-            />
-            <textarea
-              required
-              ref={gradeAnswersRef}
-              value={gradeAnswersDisplay}
-              onChange={() => {}}
-              onKeyDown={onGradeAnswersKeyDown}
-              onPaste={onGradeAnswersPaste}
-              className="h-28 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono outline-none ring-brand-500 focus:ring"
-              placeholder="A"
-            />
-            <button
-              disabled={busy || !gradeForm.exam_id}
-              className="w-full rounded-xl bg-emerald-600 px-4 py-2 font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
-            >
-              Grade Submission
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-panel">
-          <h3 className="font-display text-lg font-semibold">Latest Exam Template</h3>
-          {latestExam ? (
-            <div className="mt-3 space-y-1 text-sm text-slate-700">
-              <p>Title: <span className="font-semibold">{latestExam.title}</span></p>
-              <p>Total items: <span className="font-semibold">{latestExam.total_items}</span></p>
-              <p>Created: <span className="font-semibold">{latestExam.created_at}</span></p>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-slate-600">No exam templates yet.</p>
-          )}
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-panel">
-          <h3 className="font-display text-lg font-semibold">Last API Result</h3>
-          {lastResult?.data?.score !== undefined ? (
-            <div className="mt-3 text-sm text-slate-700">
-              <p>
-                Score: <span className="font-semibold">{lastResult.data.score}</span> / {lastResult.data.total_items}
-              </p>
-              <p>
-                Percent: <span className="font-semibold">{scorePercent(lastResult.data.score, lastResult.data.total_items)}%</span>
-              </p>
-            </div>
-          ) : (
-            <pre className="mt-3 max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-cyan-200">
-              {JSON.stringify(lastResult, null, 2) || 'No recent actions.'}
-            </pre>
-          )}
-        </article>
-      </section>
-    </main>
+    <LmsDashboard
+      scanCenter={{
+        apiBase: API_BASE,
+        health,
+        scanner,
+        exams,
+        examForm,
+        setExamForm,
+        onTotalItemsChange,
+        answerKeyRef,
+        answerKeyDisplay: answerKeyGrid.display,
+        onAnswerKeyKeyDown: answerKeyGrid.onKeyDown,
+        onAnswerKeyPaste: answerKeyGrid.onPaste,
+        pdfImportStatus,
+        onExamPdfUpload,
+        onCreateExam,
+        scanRequest,
+        setScanRequest,
+        onScan,
+        gradeForm,
+        setGradeForm,
+        selectedGradeExam,
+        gradeAnswersRef,
+        gradeAnswersDisplay: gradeAnswersGrid.display,
+        onGradeAnswersKeyDown: gradeAnswersGrid.onKeyDown,
+        onGradeAnswersPaste: gradeAnswersGrid.onPaste,
+        onGrade,
+        latestExam,
+        lastResult,
+        busy,
+        error,
+      }}
+    />
   )
 }
 

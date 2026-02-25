@@ -11,23 +11,31 @@ async function parseResponse(response) {
   return data;
 }
 
-export async function apiGet(path) {
+async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: 'application/json' },
-  });
+    headers: { Accept: 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
   return parseResponse(response);
 }
 
+export async function apiGet(path) {
+  return request(path)
+}
+
 export async function apiPost(path, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
+  return request(path, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
     body: JSON.stringify(body || {}),
-  });
-  return parseResponse(response);
+  })
+}
+
+export async function apiDelete(path) {
+  return request(path, { method: 'DELETE' })
 }
 
 export { API_BASE };
