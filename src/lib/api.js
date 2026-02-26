@@ -38,4 +38,15 @@ export async function apiDelete(path) {
   return request(path, { method: 'DELETE' })
 }
 
+export async function apiPut(path, body) {
+  return request(path, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body || {}),
+  })
+}
+
 export { API_BASE };

@@ -1,9 +1,9 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { apiDelete, apiGet, apiPost } from './lib/api'
+import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 
 /* ─── form defaults ─────────────────────────────────── */
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
-const emptyStudentForm      = { student_code: '', full_name: '', email: '' }
+const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
 const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', max_score: 100, due_at: '', publish_status: 'draft' }
 const emptyAnnouncementForm = { title: '', body: '' }
 
@@ -24,6 +24,14 @@ function gradeBg(row) {
 
 function initials(name = '') {
   return name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase() || '?'
+}
+
+function formatStudentFullName(givenName = '', middleName = '', surname = '') {
+  const given = String(givenName || '').trim()
+  const middle = String(middleName || '').trim()
+  const sur = String(surname || '').trim()
+  const middleInitial = middle ? `${middle[0].toUpperCase()}.` : ''
+  return [given, middleInitial, sur].filter(Boolean).join(' ') || sur || given || 'Unnamed Student'
 }
 
 function relativeTime(dateStr) {
@@ -285,7 +293,11 @@ function TabBar({ activeTab, tabs, counts, onChange }) {
 /* ═══════════════════════════════════════════════════════
    ROSTER TAB
 ═══════════════════════════════════════════════════════ */
-function RosterTab({ students, studentForm, setStudentForm, busyAction, onAddStudent, onRemoveStudent, onDeleteSubject }) {
+function RosterTab({
+  students, studentForm, setStudentForm, busyAction,
+  editingStudentId, editStudentForm, setEditStudentForm,
+  onAddStudent, onStartEditStudent, onEditStudent, onCancelEditStudent, onRemoveStudent, onDeleteSubject,
+}) {
   const a = TAB_META.roster.accent
   return (
     <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
@@ -303,10 +315,20 @@ function RosterTab({ students, studentForm, setStudentForm, busyAction, onAddStu
               onChange={(e) => setStudentForm((p) => ({ ...p, student_code: e.target.value }))}
               placeholder="e.g. 2021-00142" />
           </Field>
-          <Field label="Full Name">
-            <TextInput required value={studentForm.full_name}
-              onChange={(e) => setStudentForm((p) => ({ ...p, full_name: e.target.value }))}
-              placeholder="Juan Dela Cruz" />
+          <Field label="Given Name">
+            <TextInput required value={studentForm.given_name}
+              onChange={(e) => setStudentForm((p) => ({ ...p, given_name: e.target.value }))}
+              placeholder="Juan" />
+          </Field>
+          <Field label="Middle Name">
+            <TextInput value={studentForm.middle_name}
+              onChange={(e) => setStudentForm((p) => ({ ...p, middle_name: e.target.value }))}
+              placeholder="Santos" />
+          </Field>
+          <Field label="Surname">
+            <TextInput required value={studentForm.surname}
+              onChange={(e) => setStudentForm((p) => ({ ...p, surname: e.target.value }))}
+              placeholder="Dela Cruz" />
           </Field>
           <Field label="Email" hint="optional">
             <TextInput type="email" value={studentForm.email}
@@ -341,18 +363,62 @@ function RosterTab({ students, studentForm, setStudentForm, busyAction, onAddStu
             <div key={s.id}
               className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
             >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-sky-100 text-[11px] font-bold text-sky-600">
-                  {initials(s.full_name)}
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-sky-100 text-[11px] font-bold text-sky-600">
+                  {initials(`${s.given_name || ''} ${s.surname || ''}`.trim() || s.surname)}
                 </div>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-800">{s.full_name}</p>
-                  <p className="text-[11px] text-slate-400 font-mono">{s.student_code}</p>
+                <div className="min-w-0 flex-1">
+                  {String(editingStudentId) === String(s.id) ? (
+                    <form onSubmit={(e) => onEditStudent(e, s.id)} className="grid gap-2 sm:grid-cols-2">
+                      <TextInput required value={editStudentForm.student_code}
+                        onChange={(e) => setEditStudentForm((p) => ({ ...p, student_code: e.target.value }))}
+                        placeholder="Student ID / Code" />
+                      <TextInput required value={editStudentForm.given_name}
+                        onChange={(e) => setEditStudentForm((p) => ({ ...p, given_name: e.target.value }))}
+                        placeholder="Given Name" />
+                      <TextInput value={editStudentForm.middle_name}
+                        onChange={(e) => setEditStudentForm((p) => ({ ...p, middle_name: e.target.value }))}
+                        placeholder="Middle Name" />
+                      <TextInput required value={editStudentForm.surname}
+                        onChange={(e) => setEditStudentForm((p) => ({ ...p, surname: e.target.value }))}
+                        placeholder="Surname" />
+                      <div className="sm:col-span-2">
+                        <TextInput type="email" value={editStudentForm.email}
+                          onChange={(e) => setEditStudentForm((p) => ({ ...p, email: e.target.value }))}
+                          placeholder="Email (optional)" />
+                      </div>
+                      <div className="sm:col-span-2 flex items-center gap-2">
+                        <GhostBtn type="submit" disabled={busyAction === `edit-student-${s.id}`}>
+                          {busyAction === `edit-student-${s.id}` ? <SpinIcon /> : <PenIcon />}
+                          Save
+                        </GhostBtn>
+                        <GhostBtn type="button" onClick={onCancelEditStudent} disabled={busyAction === `edit-student-${s.id}`}>
+                          <XIcon /> Cancel
+                        </GhostBtn>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <p className="truncate text-sm font-semibold text-slate-800">
+                        {[s.given_name, s.middle_name, s.surname].filter(Boolean).join(' ')}
+                      </p>
+                      <p className="text-[11px] text-slate-400 font-mono">{s.student_code}</p>
+                    </>
+                  )}
                 </div>
               </div>
-              <GhostBtn onClick={() => onRemoveStudent(s.id)} disabled={busyAction === `remove-student-${s.id}`}>
-                {busyAction === `remove-student-${s.id}` ? <SpinIcon /> : <XIcon />}
-              </GhostBtn>
+              {String(editingStudentId) !== String(s.id) && (
+                <div className="flex items-center gap-2">
+                  <GhostBtn type="button" onClick={() => {
+                    onStartEditStudent(s)
+                  }}>
+                    <PenIcon />
+                  </GhostBtn>
+                  <GhostBtn onClick={() => onRemoveStudent(s.id)} disabled={busyAction === `remove-student-${s.id}`}>
+                    {busyAction === `remove-student-${s.id}` ? <SpinIcon /> : <XIcon />}
+                  </GhostBtn>
+                </div>
+              )}
             </div>
           )) : (
             <EmptyState icon={<UsersIcon size="lg" />} title="No students enrolled yet" description="Use the form to enroll your first student." />
@@ -698,26 +764,29 @@ function GradebookTab({ gradebook, atRiskStudents }) {
               </tr>
             </thead>
             <tbody>
-              {gradebook.map((row) => (
-                <tr key={row.student_id} className="border-b border-slate-50 transition hover:bg-slate-50">
-                  <td className="py-3 pr-6">
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">
-                        {initials(row.full_name)}
+              {gradebook.map((row) => {
+                const displayName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
+                return (
+                  <tr key={row.student_id} className="border-b border-slate-50 transition hover:bg-slate-50">
+                    <td className="py-3 pr-6">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">
+                          {initials(displayName)}
+                        </div>
+                        <span className="font-semibold text-slate-800">{displayName}</span>
                       </div>
-                      <span className="font-semibold text-slate-800">{row.full_name}</span>
-                    </div>
-                  </td>
-                  <td className="py-3 pr-6 font-mono text-xs text-slate-500">{row.student_code}</td>
-                  <td className="py-3 pr-6 text-slate-700">{row.completed_activities}</td>
-                  <td className="py-3 pr-6 text-slate-700">{row.published_activities}</td>
-                  <td className="py-3">
-                    <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${gradeBg(row)}`}>
-                      {formatPercent(row.average_percent)}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="py-3 pr-6 font-mono text-xs text-slate-500">{row.student_code}</td>
+                    <td className="py-3 pr-6 text-slate-700">{row.completed_activities}</td>
+                    <td className="py-3 pr-6 text-slate-700">{row.published_activities}</td>
+                    <td className="py-3">
+                      <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${gradeBg(row)}`}>
+                        {formatPercent(row.average_percent)}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -896,6 +965,8 @@ export default function LmsDashboard({ scanCenter = null }) {
   const [showSubjectForm, setShowSubjectForm]     = useState(false)
   const [subjectForm, setSubjectForm]             = useState(emptySubjectForm)
   const [studentForm, setStudentForm]             = useState(emptyStudentForm)
+  const [editingStudentId, setEditingStudentId]   = useState('')
+  const [editStudentForm, setEditStudentForm]     = useState(emptyStudentForm)
   const [activityForm, setActivityForm]           = useState(emptyActivityForm)
   const [announcementForm, setAnnouncementForm]   = useState(emptyAnnouncementForm)
   const [activeTab, setActiveTab]                 = useState('roster')
@@ -949,6 +1020,7 @@ export default function LmsDashboard({ scanCenter = null }) {
 
   useEffect(() => {
     if (!selectedSubjectId) return
+    onCancelEditStudent()
     setLoading(true)
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
@@ -983,8 +1055,47 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!selectedSubjectId) return
     setBusyAction('student')
     try {
-      await apiPost(`/lms/subjects/${selectedSubjectId}/students`, studentForm)
+      await apiPost(`/lms/subjects/${selectedSubjectId}/students`, {
+        student_code: studentForm.student_code.trim(),
+        surname: studentForm.surname.trim(),
+        given_name: studentForm.given_name.trim(),
+        middle_name: studentForm.middle_name.trim(),
+        email: studentForm.email.trim(),
+      })
       setStudentForm(emptyStudentForm)
+      await loadSubjectDetails(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onStartEditStudent(student) {
+    setEditingStudentId(String(student.id))
+    setEditStudentForm({
+      student_code: student.student_code || '',
+      surname: student.surname || '',
+      given_name: student.given_name || '',
+      middle_name: student.middle_name || '',
+      email: student.email || '',
+    })
+  }
+
+  function onCancelEditStudent() {
+    setEditingStudentId('')
+    setEditStudentForm(emptyStudentForm)
+  }
+
+  async function onEditStudent(e, id) {
+    if (e) e.preventDefault()
+    if (!selectedSubjectId) return
+    setBusyAction(`edit-student-${id}`)
+    try {
+      await apiPut(`/lms/subjects/${selectedSubjectId}/students/${id}`, {
+        student_code: editStudentForm.student_code.trim(),
+        surname: editStudentForm.surname.trim(),
+        given_name: editStudentForm.given_name.trim(),
+        middle_name: editStudentForm.middle_name.trim(),
+        email: editStudentForm.email.trim(),
+      })
+      onCancelEditStudent()
       await loadSubjectDetails(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -993,6 +1104,9 @@ export default function LmsDashboard({ scanCenter = null }) {
     setBusyAction(`remove-student-${id}`)
     try {
       await apiDelete(`/lms/subjects/${selectedSubjectId}/students/${id}`)
+      if (String(editingStudentId) === String(id)) {
+        onCancelEditStudent()
+      }
       await loadSubjectDetails(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -1063,12 +1177,36 @@ export default function LmsDashboard({ scanCenter = null }) {
 
       {/* SUBJECT BAR */}
       <section className="mt-5 flex flex-wrap items-center gap-3">
-        {/* <button type="button" onClick={() => setSubjectsPanelOpen((v) => !v)}
+        <button
+          type="button"
+          onClick={() => {
+            if (selectedSubject) {
+              setSelectedSubjectId('')
+              setSubjectsPanelOpen(false)
+              setActiveTab('roster')
+              onCancelEditStudent()
+            } else {
+              setSubjectsPanelOpen((v) => !v)
+            }
+          }}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
         >
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          {subjectsPanelOpen ? 'Close Subjects' : 'Switch Subject'}
-        </button> */}
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            {selectedSubject ? (
+              <>
+                <line x1="19" y1="12" x2="5" y2="12" />
+                <polyline points="12 19 5 12 12 5" />
+              </>
+            ) : (
+              <>
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </>
+            )}
+          </svg>
+          {selectedSubject ? 'Back to Subjects' : (subjectsPanelOpen ? 'Close Subjects' : 'Switch Subject')}
+        </button>
 
         {selectedSubject && (
           <div className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5">
@@ -1166,7 +1304,14 @@ export default function LmsDashboard({ scanCenter = null }) {
             {activeTab === 'roster' && (
               <RosterTab
                 students={students} studentForm={studentForm} setStudentForm={setStudentForm}
-                busyAction={busyAction} onAddStudent={onAddStudent}
+                busyAction={busyAction}
+                editingStudentId={editingStudentId}
+                editStudentForm={editStudentForm}
+                setEditStudentForm={setEditStudentForm}
+                onAddStudent={onAddStudent}
+                onStartEditStudent={onStartEditStudent}
+                onEditStudent={onEditStudent}
+                onCancelEditStudent={onCancelEditStudent}
                 onRemoveStudent={onRemoveStudent} onDeleteSubject={onDeleteSubject}
               />
             )}

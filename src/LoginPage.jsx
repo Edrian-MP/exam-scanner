@@ -24,7 +24,7 @@ function LoginPage({ apiBase, onLogin, onSignUp, busy, error }) {
         setLocalError('Password confirmation does not match.')
         return
       }
-      onSignUp({ full_name: fullName.trim(), email: email.trim().toLowerCase(), password })
+      onSignUp({ surname: fullName.trim(), email: email.trim().toLowerCase(), password })
       return
     }
     onLogin({ email: email.trim().toLowerCase(), password })

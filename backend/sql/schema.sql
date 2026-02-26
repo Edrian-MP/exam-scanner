@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS submissions (
 
 CREATE TABLE IF NOT EXISTS educators (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  full_name VARCHAR(180) NOT NULL,
+  surname VARCHAR(180) NOT NULL,
   email VARCHAR(180) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   profile_photo_data MEDIUMTEXT NULL,
@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS subjects (
 CREATE TABLE IF NOT EXISTS students (
   id INT AUTO_INCREMENT PRIMARY KEY,
   student_code VARCHAR(64) NOT NULL,
-  full_name VARCHAR(180) NOT NULL,
+  surname VARCHAR(180) NOT NULL,
+  given_name VARCHAR(120) NULL,
+  middle_name VARCHAR(120) NULL,
   email VARCHAR(180) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_student_code (student_code)

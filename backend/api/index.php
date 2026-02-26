@@ -10,7 +10,7 @@ $cfg = app_config();
 
 header('Access-Control-Allow-Origin: ' . $cfg['cors_origin']);
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
-header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     http_response_code(204);
@@ -137,12 +137,31 @@ function ensure_lms_schema(): void
             "CREATE TABLE IF NOT EXISTS students (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 student_code VARCHAR(64) NOT NULL,
-                full_name VARCHAR(180) NOT NULL,
+                surname VARCHAR(180) NOT NULL,
+                given_name VARCHAR(120) NULL,
+                middle_name VARCHAR(120) NULL,
                 email VARCHAR(180) NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_student_code (student_code)
             )"
         );
+        $studentSurnameExists = db()->query("SHOW COLUMNS FROM students LIKE 'surname'")->fetch();
+        if (!$studentSurnameExists) {
+            $studentFullNameExists = db()->query("SHOW COLUMNS FROM students LIKE 'full_name'")->fetch();
+            if ($studentFullNameExists) {
+                db()->exec("ALTER TABLE students CHANGE COLUMN full_name surname VARCHAR(180) NOT NULL");
+            } else {
+                db()->exec("ALTER TABLE students ADD COLUMN surname VARCHAR(180) NOT NULL AFTER student_code");
+            }
+        }
+        $studentGivenNameExists = db()->query("SHOW COLUMNS FROM students LIKE 'given_name'")->fetch();
+        if (!$studentGivenNameExists) {
+            db()->exec("ALTER TABLE students ADD COLUMN given_name VARCHAR(120) NULL AFTER surname");
+        }
+        $studentMiddleNameExists = db()->query("SHOW COLUMNS FROM students LIKE 'middle_name'")->fetch();
+        if (!$studentMiddleNameExists) {
+            db()->exec("ALTER TABLE students ADD COLUMN middle_name VARCHAR(120) NULL AFTER given_name");
+        }
         db()->exec(
             "CREATE TABLE IF NOT EXISTS subject_students (
                 subject_id INT NOT NULL,
@@ -209,7 +228,7 @@ function ensure_educators_schema(): void
         db()->exec(
             "CREATE TABLE IF NOT EXISTS educators (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                full_name VARCHAR(180) NOT NULL,
+                surname VARCHAR(180) NOT NULL,
                 email VARCHAR(180) NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 profile_photo_data MEDIUMTEXT NULL,
@@ -219,6 +238,15 @@ function ensure_educators_schema(): void
                 UNIQUE KEY uq_educator_email (email)
             )"
         );
+        $educatorSurnameExists = db()->query("SHOW COLUMNS FROM educators LIKE 'surname'")->fetch();
+        if (!$educatorSurnameExists) {
+            $educatorFullNameExists = db()->query("SHOW COLUMNS FROM educators LIKE 'full_name'")->fetch();
+            if ($educatorFullNameExists) {
+                db()->exec("ALTER TABLE educators CHANGE COLUMN full_name surname VARCHAR(180) NOT NULL");
+            } else {
+                db()->exec("ALTER TABLE educators ADD COLUMN surname VARCHAR(180) NOT NULL AFTER id");
+            }
+        }
         $photoExistsStmt = db()->query("SHOW COLUMNS FROM educators LIKE 'profile_photo_data'");
         $photoExists = $photoExistsStmt->fetch();
         if (!$photoExists) {
@@ -230,11 +258,11 @@ function ensure_educators_schema(): void
         $count = (int) ($countRow['c'] ?? 0);
         if ($count < 1) {
             $insert = db()->prepare(
-                'INSERT INTO educators (full_name, email, password_hash, is_active)
-                 VALUES (:full_name, :email, :password_hash, 1)'
+                'INSERT INTO educators (surname, email, password_hash, is_active)
+                 VALUES (:surname, :email, :password_hash, 1)'
             );
             $insert->execute([
-                ':full_name' => 'Default Educator',
+                ':surname' => 'Default Educator',
                 ':email' => 'educator@example.com',
                 ':password_hash' => password_hash('password123', PASSWORD_DEFAULT),
             ]);
@@ -253,7 +281,7 @@ function map_educator_public(array $row): array
 
     return [
         'id' => (int) ($row['id'] ?? 0),
-        'full_name' => (string) ($row['full_name'] ?? ''),
+        'surname' => (string) ($row['surname'] ?? ''),
         'email' => (string) ($row['email'] ?? ''),
         'profile_photo_data' => $photoData,
     ];
@@ -281,7 +309,7 @@ if ($path === '/auth/account' && $method === 'GET') {
     }
 
     $stmt = db()->prepare(
-        'SELECT id, full_name, email, profile_photo_data, is_active
+        'SELECT id, surname, email, profile_photo_data, is_active
          FROM educators
          WHERE id = :id
          LIMIT 1'
@@ -303,7 +331,7 @@ if ($path === '/auth/account' && $method === 'GET') {
 if ($path === '/auth/account' && $method === 'POST') {
     $payload = request_json();
     $educatorId = (int) ($payload['educator_id'] ?? 0);
-    $fullName = trim((string) ($payload['full_name'] ?? ''));
+    $fullName = trim((string) ($payload['surname'] ?? ''));
     $email = strtolower(trim((string) ($payload['email'] ?? '')));
     $currentPassword = (string) ($payload['current_password'] ?? '');
     $password = (string) ($payload['password'] ?? '');
@@ -314,7 +342,7 @@ if ($path === '/auth/account' && $method === 'POST') {
     }
 
     if ($educatorId < 1 || $fullName === '' || $email === '') {
-        json_response(400, ['ok' => false, 'error' => 'educator_id, full_name, and email are required']);
+        json_response(400, ['ok' => false, 'error' => 'educator_id, surname, and email are required']);
     }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         json_response(400, ['ok' => false, 'error' => 'Invalid email address']);
@@ -364,14 +392,14 @@ if ($path === '/auth/account' && $method === 'POST') {
     if ($password !== '') {
         $updateStmt = db()->prepare(
             'UPDATE educators
-             SET full_name = :full_name,
+             SET surname = :surname,
                  email = :email,
                  profile_photo_data = :profile_photo_data,
                  password_hash = :password_hash
              WHERE id = :id'
         );
         $updateStmt->execute([
-            ':full_name' => $fullName,
+            ':surname' => $fullName,
             ':email' => $email,
             ':profile_photo_data' => $profilePhotoData,
             ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
@@ -380,13 +408,13 @@ if ($path === '/auth/account' && $method === 'POST') {
     } else {
         $updateStmt = db()->prepare(
             'UPDATE educators
-             SET full_name = :full_name,
+             SET surname = :surname,
                  email = :email,
                  profile_photo_data = :profile_photo_data
              WHERE id = :id'
         );
         $updateStmt->execute([
-            ':full_name' => $fullName,
+            ':surname' => $fullName,
             ':email' => $email,
             ':profile_photo_data' => $profilePhotoData,
             ':id' => $educatorId,
@@ -394,7 +422,7 @@ if ($path === '/auth/account' && $method === 'POST') {
     }
 
     $resultStmt = db()->prepare(
-        'SELECT id, full_name, email, profile_photo_data
+        'SELECT id, surname, email, profile_photo_data
          FROM educators
          WHERE id = :id
          LIMIT 1'
@@ -413,12 +441,12 @@ if ($path === '/auth/account' && $method === 'POST') {
 if ($path === '/auth/signup') {
     ensure_method('POST');
     $payload = request_json();
-    $fullName = trim((string) ($payload['full_name'] ?? ''));
+    $fullName = trim((string) ($payload['surname'] ?? ''));
     $email = strtolower(trim((string) ($payload['email'] ?? '')));
     $password = (string) ($payload['password'] ?? '');
 
     if ($fullName === '' || $email === '' || $password === '') {
-        json_response(400, ['ok' => false, 'error' => 'full_name, email, and password are required']);
+        json_response(400, ['ok' => false, 'error' => 'surname, email, and password are required']);
     }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         json_response(400, ['ok' => false, 'error' => 'Invalid email address']);
@@ -434,11 +462,11 @@ if ($path === '/auth/signup') {
     }
 
     $insert = db()->prepare(
-        'INSERT INTO educators (full_name, email, password_hash, is_active)
-         VALUES (:full_name, :email, :password_hash, 1)'
+        'INSERT INTO educators (surname, email, password_hash, is_active)
+         VALUES (:surname, :email, :password_hash, 1)'
     );
     $insert->execute([
-        ':full_name' => $fullName,
+        ':surname' => $fullName,
         ':email' => $email,
         ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
     ]);
@@ -448,7 +476,7 @@ if ($path === '/auth/signup') {
         'data' => [
             'educator' => [
                 'id' => (int) db()->lastInsertId(),
-                'full_name' => $fullName,
+                'surname' => $fullName,
                 'email' => $email,
                 'profile_photo_data' => null,
             ],
@@ -467,7 +495,7 @@ if ($path === '/auth/login') {
     }
 
     $stmt = db()->prepare(
-        'SELECT id, full_name, email, password_hash, profile_photo_data, is_active
+        'SELECT id, surname, email, password_hash, profile_photo_data, is_active
          FROM educators
          WHERE email = :email
          LIMIT 1'
@@ -725,11 +753,11 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
-            'SELECT st.id, st.student_code, st.full_name, st.email, ss.enrolled_at
+            'SELECT st.id, st.student_code, st.surname, st.given_name, st.middle_name, st.email, ss.enrolled_at
              FROM subject_students ss
              INNER JOIN students st ON st.id = ss.student_id
              WHERE ss.subject_id = :subject_id
-             ORDER BY st.full_name ASC'
+             ORDER BY st.surname ASC, st.given_name ASC'
         );
         $stmt->execute([':subject_id' => $subjectId]);
         json_response(200, ['ok' => true, 'data' => $stmt->fetchAll()]);
@@ -738,11 +766,13 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
     if ($method === 'POST') {
         $payload = request_json();
         $studentCode = strtoupper(trim((string) ($payload['student_code'] ?? '')));
-        $fullName = trim((string) ($payload['full_name'] ?? ''));
+        $surname = trim((string) ($payload['surname'] ?? ''));
+        $givenName = trim((string) ($payload['given_name'] ?? ''));
+        $middleName = trim((string) ($payload['middle_name'] ?? ''));
         $email = trim((string) ($payload['email'] ?? ''));
 
-        if ($studentCode === '' || $fullName === '') {
-            json_response(400, ['ok' => false, 'error' => 'student_code and full_name are required']);
+        if ($studentCode === '' || $surname === '') {
+            json_response(400, ['ok' => false, 'error' => 'student_code and surname are required']);
         }
 
         $findStudent = db()->prepare('SELECT id FROM students WHERE student_code = :student_code LIMIT 1');
@@ -753,23 +783,29 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
             $studentId = (int) $student['id'];
             $update = db()->prepare(
                 'UPDATE students
-                 SET full_name = :full_name,
+                 SET surname = :surname,
+                     given_name = :given_name,
+                     middle_name = :middle_name,
                      email = :email
                  WHERE id = :id'
             );
             $update->execute([
                 ':id' => $studentId,
-                ':full_name' => $fullName,
+                ':surname' => $surname,
+                ':given_name' => $givenName !== '' ? $givenName : null,
+                ':middle_name' => $middleName !== '' ? $middleName : null,
                 ':email' => $email !== '' ? $email : null,
             ]);
         } else {
             $insertStudent = db()->prepare(
-                'INSERT INTO students (student_code, full_name, email)
-                 VALUES (:student_code, :full_name, :email)'
+                'INSERT INTO students (student_code, surname, given_name, middle_name, email)
+                 VALUES (:student_code, :surname, :given_name, :middle_name, :email)'
             );
             $insertStudent->execute([
                 ':student_code' => $studentCode,
-                ':full_name' => $fullName,
+                ':surname' => $surname,
+                ':given_name' => $givenName !== '' ? $givenName : null,
+                ':middle_name' => $middleName !== '' ? $middleName : null,
                 ':email' => $email !== '' ? $email : null,
             ]);
             $studentId = (int) db()->lastInsertId();
@@ -792,6 +828,53 @@ if (preg_match('#^/lms/subjects/(\d+)/students/(\d+)$#', $path, $matches)) {
     $subjectId = (int) $matches[1];
     $studentId = (int) $matches[2];
     find_subject_or_404($subjectId);
+
+    if ($method === 'PUT') {
+        $belongsStmt = db()->prepare(
+            'SELECT 1
+             FROM subject_students
+             WHERE subject_id = :subject_id AND student_id = :student_id
+             LIMIT 1'
+        );
+        $belongsStmt->execute([
+            ':subject_id' => $subjectId,
+            ':student_id' => $studentId,
+        ]);
+        if (!$belongsStmt->fetch()) {
+            json_response(404, ['ok' => false, 'error' => 'Student not found in subject']);
+        }
+
+        $payload = request_json();
+        $studentCode = strtoupper(trim((string) ($payload['student_code'] ?? '')));
+        $surname = trim((string) ($payload['surname'] ?? ''));
+        $givenName = trim((string) ($payload['given_name'] ?? ''));
+        $middleName = trim((string) ($payload['middle_name'] ?? ''));
+        $email = trim((string) ($payload['email'] ?? ''));
+
+        if ($studentCode === '' || $surname === '') {
+            json_response(400, ['ok' => false, 'error' => 'student_code and surname are required']);
+        }
+
+        $update = db()->prepare(
+            'UPDATE students
+             SET student_code = :student_code,
+                 surname = :surname,
+                 given_name = :given_name,
+                 middle_name = :middle_name,
+                 email = :email
+             WHERE id = :id'
+        );
+        $update->execute([
+            ':id' => $studentId,
+            ':student_code' => $studentCode,
+            ':surname' => $surname,
+            ':given_name' => $givenName !== '' ? $givenName : null,
+            ':middle_name' => $middleName !== '' ? $middleName : null,
+            ':email' => $email !== '' ? $email : null,
+        ]);
+
+        json_response(200, ['ok' => true]);
+    }
 
     if ($method === 'DELETE') {
         $stmt = db()->prepare(
@@ -927,7 +1010,9 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
     $stmt = db()->prepare(
         'SELECT st.id AS student_id,
                 st.student_code,
-                st.full_name,
+                st.surname,
+                st.given_name,
+                st.middle_name,
                 COUNT(DISTINCT CASE WHEN a.publish_status = "published" THEN a.id END) AS published_activities,
                 COUNT(DISTINCT CASE WHEN a.publish_status = "published" AND sub.id IS NOT NULL THEN a.id END) AS completed_activities,
                 ROUND(AVG(
@@ -947,8 +1032,8 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
             ON sub.exam_id = a.exam_id
             AND sub.student_code = st.student_code
          WHERE ss.subject_id = :subject_id
-         GROUP BY st.id, st.student_code, st.full_name
-         ORDER BY st.full_name ASC'
+         GROUP BY st.id, st.student_code, st.surname, st.given_name, st.middle_name
+         ORDER BY st.surname ASC, st.given_name ASC, st.middle_name ASC'
     );
     $stmt->execute([':subject_id' => $subjectId]);
     json_response(200, ['ok' => true, 'data' => $stmt->fetchAll()]);

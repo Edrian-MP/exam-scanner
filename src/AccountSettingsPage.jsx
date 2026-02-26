@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
-  const [fullName, setFullName] = useState(educator?.full_name || '')
+  const [fullName, setFullName] = useState(educator?.surname || '')
   const [email, setEmail] = useState(educator?.email || '')
   const [currentPassword, setCurrentPassword] = useState('')
   const [password, setPassword] = useState('')
@@ -10,7 +10,7 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
   const [localError, setLocalError] = useState('')
 
   useEffect(() => {
-    setFullName(educator?.full_name || '')
+    setFullName(educator?.surname || '')
     setEmail(educator?.email || '')
     setPhotoData(educator?.profile_photo_data || null)
     setCurrentPassword('')
@@ -66,7 +66,7 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
     }
 
     onSave({
-      full_name: fullName.trim(),
+      surname: fullName.trim(),
       email: email.trim().toLowerCase(),
       current_password: currentPassword,
       password,

@@ -430,7 +430,7 @@ function App() {
     )
   }
 
-  const educatorInitials = (educator.full_name || '?')
+  const educatorInitials = (educator.surname || '?')
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
@@ -455,7 +455,7 @@ function App() {
             )}
             <div className="min-w-0">
               <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Logged in educator</p>
-              <p className="truncate text-sm font-semibold text-slate-800">{educator.full_name} - {educator.email}</p>
+              <p className="truncate text-sm font-semibold text-slate-800">{educator.surname} - {educator.email}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
