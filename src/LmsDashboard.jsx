@@ -57,6 +57,16 @@ const TAB_META = {
     icon: <BellIcon />,
     accent: { dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50', btn: 'bg-amber-500 hover:bg-amber-600', badge: 'bg-amber-100 text-amber-700' },
   },
+  scan: {
+    label: 'Scan',
+    icon: <ScanIcon />,
+    accent: { dot: 'bg-slate-700', text: 'text-slate-700', bg: 'bg-slate-50', btn: 'bg-slate-800 hover:bg-slate-700', badge: 'bg-slate-200 text-slate-700' },
+  },
+  gradebook: {
+    label: 'Gradebook',
+    icon: <GradebookIcon />,
+    accent: { dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50', btn: 'bg-emerald-600 hover:bg-emerald-700', badge: 'bg-emerald-100 text-emerald-700' },
+  },
 }
 
 const ACTIVITY_TYPE_STYLES = {
@@ -157,27 +167,6 @@ function Badge({ children, className = '' }) {
   )
 }
 
-function CollapseSection({ open, onToggle, header, children }) {
-  return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between px-6 py-4 text-left transition hover:bg-slate-50"
-      >
-        <div className="flex items-center gap-3">{header}</div>
-        <svg
-          className={`h-4 w-4 flex-shrink-0 text-slate-400 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
-          viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {open && <div className="border-t border-slate-100">{children}</div>}
-    </div>
-  )
-}
-
 function EmptyState({ icon, title, description }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -233,11 +222,35 @@ function StatCard({ icon, label, value, sub, accent }) {
 }
 
 /* ═══════════════════════════════════════════════════════
+   MINI STAT (compact header strip)
+═══════════════════════════════════════════════════════ */
+function MiniStat({ icon, label, value, sub, accent }) {
+  const a = {
+    sky:     { iconWrap: 'text-sky-500',     val: 'text-sky-700'     },
+    violet:  { iconWrap: 'text-violet-500',  val: 'text-violet-700'  },
+    emerald: { iconWrap: 'text-emerald-500', val: 'text-emerald-700' },
+    amber:   { iconWrap: 'text-amber-500',   val: 'text-amber-700'   },
+    slate:   { iconWrap: 'text-slate-400',   val: 'text-slate-700'   },
+  }[accent] || { iconWrap: 'text-slate-400', val: 'text-slate-700' }
+
+  return (
+    <div className="flex items-center gap-3 px-5 py-3">
+      <span className={a.iconWrap}>{icon}</span>
+      <div>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
+        <p className={`text-xl font-bold leading-tight ${a.val}`}>{value}</p>
+        {sub && <p className="text-[11px] text-slate-400">{sub}</p>}
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
    TAB BAR
 ═══════════════════════════════════════════════════════ */
 function TabBar({ activeTab, tabs, counts, onChange }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded-2xl bg-slate-100 p-1.5">
+    <div className="inline-flex flex-wrap items-center gap-1 rounded-2xl bg-slate-100 p-1.5">
       {tabs.map((key) => {
         const meta   = TAB_META[key]
         const active = activeTab === key
@@ -302,52 +315,47 @@ function RosterTab({ students, studentForm, setStudentForm, busyAction, onAddStu
           </Field>
           <div className="mt-auto pt-2">
             <SubmitBtn disabled={busyAction === 'student'} colorClass={a.btn}>
-              {busyAction === 'student' ? <><SpinIcon /> Enrolling…</> : <><PlusIcon /> Enroll Student</>}
+              {busyAction === 'student' ? <><SpinIcon /> Enrolling…</> : 'Enroll Student'}
             </SubmitBtn>
           </div>
         </form>
 
-        {/* Danger zone */}
-        <div className="rounded-xl border border-rose-100 bg-rose-50 p-3.5">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-rose-400">Danger Zone</p>
-          <p className="mt-1 text-xs text-slate-500">Permanently deletes this subject, roster, and all activities.</p>
-          <DangerBtn type="button" onClick={onDeleteSubject} disabled={busyAction === 'delete-subject'} className="mt-2.5">
-            <TrashIcon /> Delete Subject
+        <div className="border-t border-slate-100 pt-4">
+          <DangerBtn onClick={onDeleteSubject} disabled={busyAction === 'delete-subject'} className="w-full justify-center">
+            {busyAction === 'delete-subject' ? <><SpinIcon /> Deleting…</> : <><TrashIcon /> Delete Subject</>}
           </DangerBtn>
         </div>
       </div>
 
       {/* RIGHT: list */}
-      <div className="flex flex-col p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">Class List</h3>
-          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${a.badge}`}>
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-800">Enrolled Students</h3>
+          <span className="text-xs text-slate-400">
             {students.length} {students.length === 1 ? 'student' : 'students'}
           </span>
         </div>
 
-        <div className="flex-1 space-y-2 overflow-y-auto pr-1">
-          {students.length ? students.map((s, i) => (
+        <div className="max-h-[384px] overflow-y-auto space-y-2 pr-1">
+          {students.length ? students.map((s) => (
             <div key={s.id}
-              className="group flex items-center gap-3.5 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
+              className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
             >
-              <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold ${a.bg} ${a.text}`}>
-                {initials(s.full_name)}
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-sky-100 text-[11px] font-bold text-sky-600">
+                  {initials(s.full_name)}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-800">{s.full_name}</p>
+                  <p className="text-[11px] text-slate-400 font-mono">{s.student_code}</p>
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-800">{s.full_name}</p>
-                <p className="text-xs text-slate-400">{s.student_code}{s.email ? ` · ${s.email}` : ''}</p>
-              </div>
-              <span className="text-xs text-slate-300 tabular-nums">#{i + 1}</span>
-              <button type="button" onClick={() => onRemoveStudent(s.id)} disabled={busyAction === `remove-student-${s.id}`}
-                className="rounded-lg p-1.5 text-slate-300 opacity-0 transition group-hover:opacity-100 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
-                aria-label="Remove student"
-              >
-                <XIcon />
-              </button>
+              <GhostBtn onClick={() => onRemoveStudent(s.id)} disabled={busyAction === `remove-student-${s.id}`}>
+                {busyAction === `remove-student-${s.id}` ? <SpinIcon /> : <XIcon />}
+              </GhostBtn>
             </div>
           )) : (
-            <EmptyState icon={<UsersIcon size="lg" />} title="No students enrolled yet" description="Use the form to add your first student." />
+            <EmptyState icon={<UsersIcon size="lg" />} title="No students enrolled yet" description="Use the form to enroll your first student." />
           )}
         </div>
       </div>
@@ -376,58 +384,53 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
               onChange={(e) => setActivityForm((p) => ({ ...p, title: e.target.value }))}
               placeholder="e.g. Midterm Examination" />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Type">
-              <SelectInput value={activityForm.activity_type}
-                onChange={(e) => setActivityForm((p) => ({ ...p, activity_type: e.target.value }))}>
-                <option value="exam">Exam</option>
-                <option value="quiz">Quiz</option>
-                <option value="activity">Activity</option>
-              </SelectInput>
-            </Field>
-            <Field label="Status">
-              <SelectInput value={activityForm.publish_status}
-                onChange={(e) => setActivityForm((p) => ({ ...p, publish_status: e.target.value }))}>
-                <option value="draft">Draft</option>
-                <option value="published">Published</option>
-                <option value="archived">Archived</option>
-              </SelectInput>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Max Score">
-              <TextInput type="number" min={1} value={activityForm.max_score}
-                onChange={(e) => setActivityForm((p) => ({ ...p, max_score: e.target.value }))}
-                placeholder="100" />
-            </Field>
-            <Field label="Due Date" hint="optional">
-              <TextInput type="datetime-local" value={activityForm.due_at}
-                onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))} />
-            </Field>
-          </div>
+          <Field label="Type">
+            <SelectInput value={activityForm.activity_type}
+              onChange={(e) => setActivityForm((p) => ({ ...p, activity_type: e.target.value }))}>
+              <option value="exam">Exam</option>
+              <option value="quiz">Quiz</option>
+              <option value="activity">Activity</option>
+            </SelectInput>
+          </Field>
           <Field label="Linked Exam ID" hint="optional">
-            <TextInput value={activityForm.exam_id}
+            <TextInput type="number" value={activityForm.exam_id}
               onChange={(e) => setActivityForm((p) => ({ ...p, exam_id: e.target.value }))}
               placeholder="Leave blank if none" />
           </Field>
+          <Field label="Max Score">
+            <TextInput type="number" min={1} value={activityForm.max_score}
+              onChange={(e) => setActivityForm((p) => ({ ...p, max_score: e.target.value }))} />
+          </Field>
+          <Field label="Due Date" hint="optional">
+            <TextInput type="datetime-local" value={activityForm.due_at}
+              onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))} />
+          </Field>
+          <Field label="Status">
+            <SelectInput value={activityForm.publish_status}
+              onChange={(e) => setActivityForm((p) => ({ ...p, publish_status: e.target.value }))}>
+              <option value="draft">Draft</option>
+              <option value="published">Published</option>
+              <option value="archived">Archived</option>
+            </SelectInput>
+          </Field>
           <div className="mt-auto pt-2">
             <SubmitBtn disabled={busyAction === 'activity'} colorClass={a.btn}>
-              {busyAction === 'activity' ? <><SpinIcon /> Saving…</> : <><PlusIcon /> Save Activity</>}
+              {busyAction === 'activity' ? <><SpinIcon /> Saving…</> : 'Create Activity'}
             </SubmitBtn>
           </div>
         </form>
       </div>
 
       {/* RIGHT: list */}
-      <div className="flex flex-col p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">Activity Board</h3>
-          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${a.badge}`}>
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-800">Posted Activities</h3>
+          <span className="text-xs text-slate-400">
             {activities.length} {activities.length === 1 ? 'activity' : 'activities'}
           </span>
         </div>
 
-        <div className="flex-1 space-y-2.5 overflow-y-auto pr-1">
+        <div className="max-h-[528px] overflow-y-auto space-y-2.5 pr-1">
           {activities.length ? activities.map((item) => (
             <div key={item.id}
               className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
@@ -478,51 +481,253 @@ function AnnouncementsTab({ announcements, announcementForm, setAnnouncementForm
           <Field label="Subject Line">
             <TextInput required value={announcementForm.title}
               onChange={(e) => setAnnouncementForm((p) => ({ ...p, title: e.target.value }))}
-              placeholder="e.g. Exam schedule reminder" />
+              placeholder="e.g. Reminder: Exam next Monday" />
           </Field>
-          <Field label="Message Body">
-            <TextareaInput required value={announcementForm.body}
+          <Field label="Message">
+            <TextareaInput required rows={6} value={announcementForm.body}
               onChange={(e) => setAnnouncementForm((p) => ({ ...p, body: e.target.value }))}
-              placeholder="Write the full announcement here…"
-              className="h-40" />
+              placeholder="Write your announcement here…" />
           </Field>
           <div className="mt-auto pt-2">
             <SubmitBtn disabled={busyAction === 'announcement'} colorClass={a.btn}>
-              {busyAction === 'announcement' ? <><SpinIcon /> Posting…</> : <>📢 Post Announcement</>}
+              {busyAction === 'announcement' ? <><SpinIcon /> Posting…</> : 'Post Announcement'}
             </SubmitBtn>
           </div>
         </form>
       </div>
 
-      {/* RIGHT: feed */}
-      <div className="flex flex-col p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">Announcement Feed</h3>
-          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${a.badge}`}>
-            {announcements.length} posted
-          </span>
+      {/* RIGHT: list */}
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-800">Recent Announcements</h3>
+          <span className="text-xs text-slate-400">{announcements.length} posted</span>
         </div>
 
-        <div className="flex-1 space-y-3 overflow-y-auto pr-1">
-          {announcements.length ? announcements.map((item, i) => (
-            <div key={item.id}
-              className="relative overflow-hidden rounded-xl border border-slate-100 bg-white p-4 shadow-sm transition hover:shadow"
-            >
-              <div className="absolute inset-y-0 left-0 w-1 rounded-l-xl bg-amber-400" />
-              <div className="pl-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-bold text-slate-800 leading-snug">{item.title}</p>
-                  <span className="flex-shrink-0 text-[11px] font-medium text-slate-400">{relativeTime(item.created_at)}</span>
-                </div>
-                <p className="mt-1.5 text-xs leading-relaxed text-slate-500 line-clamp-3">{item.body}</p>
-                {i === 0 && <Badge className="mt-2 bg-amber-100 text-amber-600">Latest</Badge>}
+        <div className="max-h-[352px] overflow-y-auto space-y-3 pr-1">
+          {announcements.length ? announcements.map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                <span className="flex-shrink-0 text-[11px] text-slate-400">{relativeTime(item.created_at)}</span>
               </div>
+              {item.body && <p className="mt-2 text-xs text-slate-500 leading-relaxed line-clamp-3">{item.body}</p>}
             </div>
           )) : (
-            <EmptyState icon={<BellIcon size="lg" />} title="No announcements yet" description="Post your first update to the class." />
+            <EmptyState icon={<BellIcon size="lg" />} title="No announcements yet" description="Post your first announcement to notify your class." />
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCAN CENTER TAB
+═══════════════════════════════════════════════════════ */
+function ScanCenterTab({ scan }) {
+  return (
+    <div className="min-h-[520px] p-6">
+      {scan.error && (
+        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {scan.error}
+        </div>
+      )}
+
+      {/* Scanner status bar */}
+      <div className="mb-6 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${scan.scanner?.scanner?.connected ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
+        <span className={`text-sm font-semibold ${scan.scanner?.scanner?.connected ? 'text-emerald-700' : 'text-amber-700'}`}>
+          {scan.scanner?.scanner?.connected ? 'Scanner Device Connected' : 'Waiting for scanner device…'}
+        </span>
+        <span className="ml-auto text-xs text-slate-400">{scan.scanner?.transport || 'n/a'}</span>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-3">
+
+        {/* Create exam template */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
+              <DocIcon />
+            </span>
+            <h3 className="text-sm font-bold text-slate-800">Create Exam Template</h3>
+          </div>
+          <form onSubmit={scan.onCreateExam} className="space-y-3">
+            <Field label="Upload PDF" hint="optional">
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={scan.onExamPdfUpload}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
+              />
+              {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
+            </Field>
+            <Field label="Exam Title">
+              <TextInput required value={scan.examForm?.title || ''} onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))} placeholder="Midterm Exam — CS101" />
+            </Field>
+            <Field label="Total Items">
+              <TextInput required type="number" min={1} max={200} value={scan.examForm?.total_items || ''} onChange={(e) => scan.onTotalItemsChange(e.target.value)} placeholder="50" />
+            </Field>
+            <Field label="Answer Key">
+              <TextareaInput
+                required
+                ref={scan.answerKeyRef}
+                value={scan.answerKeyDisplay || ''}
+                onChange={() => {}}
+                onKeyDown={scan.onAnswerKeyKeyDown}
+                onPaste={scan.onAnswerKeyPaste}
+                className="h-24 font-mono text-xs"
+                placeholder="A"
+              />
+            </Field>
+            <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">Save Exam</SubmitBtn>
+          </form>
+        </div>
+
+        {/* Scanner controls */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+              <ScanIcon />
+            </span>
+            <h3 className="text-sm font-bold text-slate-800">Scanner Controls</h3>
+          </div>
+          <form onSubmit={scan.onScan} className="space-y-3">
+            <Field label="Exam Template">
+              <SelectInput required value={scan.scanRequest?.exam_id || ''} onChange={(e) => scan.setScanRequest({ exam_id: e.target.value })}>
+                <option value="">Select exam template</option>
+                {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
+              </SelectInput>
+            </Field>
+            <SubmitBtn disabled={scan.busy || !scan.scanRequest?.exam_id} colorClass="bg-slate-800 hover:bg-slate-700">
+              Start Scan Job
+            </SubmitBtn>
+          </form>
+        </div>
+
+        {/* Manual submission */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
+              <PenIcon />
+            </span>
+            <h3 className="text-sm font-bold text-slate-800">Manual Submission</h3>
+          </div>
+          <form onSubmit={scan.onGrade} className="space-y-3">
+            <Field label="Exam Template">
+              <SelectInput required value={scan.gradeForm?.exam_id || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, exam_id: e.target.value }))}>
+                <option value="">Select exam template</option>
+                {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
+              </SelectInput>
+            </Field>
+            <Field label="Student Code">
+              <TextInput required value={scan.gradeForm?.student_code || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))} placeholder="2021-00001" />
+            </Field>
+            <Field label="Answers">
+              <TextareaInput
+                required
+                ref={scan.gradeAnswersRef}
+                value={scan.gradeAnswersDisplay || ''}
+                onChange={() => {}}
+                onKeyDown={scan.onGradeAnswersKeyDown}
+                onPaste={scan.onGradeAnswersPaste}
+                className="h-24 font-mono text-xs"
+                placeholder="A"
+              />
+            </Field>
+            <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">
+              Grade Submission
+            </SubmitBtn>
+          </form>
+        </div>
+      </div>
+
+      {/* Recent results */}
+      {(scan.latestExam || scan.lastResult) && (
+        <div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2">
+          {scan.latestExam && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Latest Template</p>
+              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.latestExam.title}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{scan.latestExam.total_items} items</p>
+            </div>
+          )}
+          {scan.lastResult && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
+              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
+   GRADEBOOK TAB
+═══════════════════════════════════════════════════════ */
+function GradebookTab({ gradebook, atRiskStudents }) {
+  return (
+    <div className="min-h-[520px] p-6">
+      {/* Summary pills */}
+      {gradebook.length > 0 && (
+        <div className="mb-5 flex flex-wrap gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            {gradebook.length} students enrolled
+          </span>
+          {atRiskStudents.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-700">
+              <RiskIcon />
+              {atRiskStudents.length} at-risk
+            </span>
+          )}
+        </div>
+      )}
+
+      {gradebook.length ? (
+        <div className="max-h-[564px] overflow-y-auto">
+          <table className="min-w-full text-sm">
+            <thead className="sticky top-0 bg-white z-10">
+              <tr className="border-b border-slate-100">
+                {['Student', 'Code', 'Completed', 'Published', 'Average'].map((h) => (
+                  <th key={h} className="pb-3 pr-6 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {gradebook.map((row) => (
+                <tr key={row.student_id} className="border-b border-slate-50 transition hover:bg-slate-50">
+                  <td className="py-3 pr-6">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">
+                        {initials(row.full_name)}
+                      </div>
+                      <span className="font-semibold text-slate-800">{row.full_name}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 pr-6 font-mono text-xs text-slate-500">{row.student_code}</td>
+                  <td className="py-3 pr-6 text-slate-700">{row.completed_activities}</td>
+                  <td className="py-3 pr-6 text-slate-700">{row.published_activities}</td>
+                  <td className="py-3">
+                    <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${gradeBg(row)}`}>
+                      {formatPercent(row.average_percent)}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyState
+          icon={<GradebookIcon size="lg" />}
+          title="No gradebook data yet"
+          description="Enroll students and post exam activities to see grades here."
+        />
+      )}
     </div>
   )
 }
@@ -550,8 +755,6 @@ export default function LmsDashboard({ scanCenter = null }) {
   const [activityForm, setActivityForm]           = useState(emptyActivityForm)
   const [announcementForm, setAnnouncementForm]   = useState(emptyAnnouncementForm)
   const [activeTab, setActiveTab]                 = useState('roster')
-  const [scanOpen, setScanOpen]                   = useState(false)
-  const [gradebookOpen, setGradebookOpen]         = useState(false)
 
   const selectedSubject     = useMemo(() => subjects.find((s) => String(s.id) === String(selectedSubjectId)), [subjects, selectedSubjectId])
   const publishedActivities = useMemo(() => activities.filter((a) => a.publish_status === 'published'), [activities])
@@ -559,6 +762,22 @@ export default function LmsDashboard({ scanCenter = null }) {
     const p = Number(r.published_activities || 0)
     return p > 0 && (Number(r.completed_activities || 0) < p || Number(r.average_percent || 0) < 75)
   }), [gradebook])
+
+  // Build tab list dynamically
+  const tabs = useMemo(() => {
+    const base = ['roster', 'activities', 'announcements']
+    if (hasScanCenter) base.push('scan')
+    base.push('gradebook')
+    return base
+  }, [hasScanCenter])
+
+  const tabCounts = useMemo(() => ({
+    roster:        students.length,
+    activities:    activities.length,
+    announcements: announcements.length,
+    scan:          scan.exams?.length || 0,
+    gradebook:     gradebook.length,
+  }), [students, activities, announcements, scan.exams, gradebook])
 
   async function loadSubjects() {
     const res = await apiGet('/lms/subjects')
@@ -662,28 +881,39 @@ export default function LmsDashboard({ scanCenter = null }) {
 
   /* ── render ─────────────────────────────────────────── */
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
 
-      {/* HERO */}
+      {/* HEADER */}
       <section className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-panel backdrop-blur">
         <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-sky-400 via-brand-500 to-violet-500" />
-        <div className="flex flex-col gap-5 p-6 sm:flex-row sm:items-start sm:justify-between sm:p-8">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1">
+
+        {/* Top row: title + status pills */}
+        <div className="flex items-center justify-between gap-4 px-5 py-3.5">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">Educator LMS</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">Educator LMS</span>
             </div>
-            <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Classroom Command</h1>
-            <p className="mt-1.5 max-w-md text-sm text-slate-500">Manage subjects, enroll students, post activities, and run exam scans — all in one place.</p>
+            <h1 className="text-lg font-bold tracking-tight text-slate-900">Classroom Command</h1>
           </div>
           {hasScanCenter && (
-            <div className="flex flex-wrap gap-2 sm:flex-col sm:items-end">
+            <div className="flex flex-shrink-0 items-center gap-2">
               <StatusPill label="Backend"  ok={scan.health?.ok} okText="Online"      failText="Offline"  />
               <StatusPill label="Database" ok={scan.health?.db} okText="MySQL Ready" failText="Check DB" />
               <StatusPill count={scan.exams?.length || 0} label="Templates" />
             </div>
           )}
         </div>
+
+        {/* Stat strip */}
+        {selectedSubject && (
+          <div className="grid grid-cols-4 divide-x divide-slate-100 border-t border-slate-100">
+            <MiniStat icon={<UsersIcon size="md" />}     label="Students"   value={students.length}         sub="enrolled"                                                                        accent="sky"     />
+            <MiniStat icon={<ClipboardIcon size="md" />} label="Activities" value={activities.length}       sub={`${publishedActivities.length} published`}                                       accent="violet"  />
+            <MiniStat icon={<GradebookIcon size="md" />} label="Gradebook"  value={gradebook.length}        sub={atRiskStudents.length > 0 ? `${atRiskStudents.length} at-risk` : 'all on track'} accent={atRiskStudents.length > 0 ? 'amber' : 'emerald'} />
+            <MiniStat icon={<ScanIcon size="md" />}      label="Templates"  value={scan.exams?.length || 0} sub="exam templates"                                                                  accent="slate"   />
+          </div>
+        )}
       </section>
 
       {/* ERROR */}
@@ -754,49 +984,43 @@ export default function LmsDashboard({ scanCenter = null }) {
             </div>
             <div className="mt-4 border-t border-slate-100 pt-4">
               {showSubjectForm ? (
-                <form onSubmit={onCreateSubject} className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Subject Code"><TextInput required value={subjectForm.subject_code} onChange={(e) => setSubjectForm((p) => ({ ...p, subject_code: e.target.value }))} placeholder="CS101" /></Field>
-                  <Field label="Title"><TextInput required value={subjectForm.title} onChange={(e) => setSubjectForm((p) => ({ ...p, title: e.target.value }))} placeholder="Course title" /></Field>
-                  <Field label="Term" hint="optional"><TextInput value={subjectForm.term_label} onChange={(e) => setSubjectForm((p) => ({ ...p, term_label: e.target.value }))} placeholder="AY 2024–25 Sem 2" /></Field>
-                  <Field label="Description" hint="optional"><TextInput value={subjectForm.description} onChange={(e) => setSubjectForm((p) => ({ ...p, description: e.target.value }))} placeholder="Short description" /></Field>
-                  <div className="col-span-full flex gap-2">
-                    <SubmitBtn disabled={busyAction === 'subject'} colorClass="bg-brand-600 hover:bg-brand-700" className="w-auto px-5">
-                      {busyAction === 'subject' ? 'Creating…' : 'Create Subject'}
+                <form onSubmit={onCreateSubject} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <Field label="Subject Code">
+                    <TextInput required value={subjectForm.subject_code} onChange={(e) => setSubjectForm((p) => ({ ...p, subject_code: e.target.value }))} placeholder="CS101" />
+                  </Field>
+                  <Field label="Title">
+                    <TextInput required value={subjectForm.title} onChange={(e) => setSubjectForm((p) => ({ ...p, title: e.target.value }))} placeholder="Introduction to Computing" />
+                  </Field>
+                  <Field label="Term" hint="optional">
+                    <TextInput value={subjectForm.term_label} onChange={(e) => setSubjectForm((p) => ({ ...p, term_label: e.target.value }))} placeholder="AY 2024–2025 S1" />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <SubmitBtn disabled={busyAction === 'subject'} colorClass="bg-brand-600 hover:bg-brand-700" className="flex-1">
+                      {busyAction === 'subject' ? <><SpinIcon /> Saving…</> : 'Create'}
                     </SubmitBtn>
-                    <GhostBtn type="button" onClick={() => setShowSubjectForm(false)}>Cancel</GhostBtn>
+                    <GhostBtn type="button" onClick={() => setShowSubjectForm(false)}><XIcon /></GhostBtn>
                   </div>
                 </form>
               ) : (
-                <button type="button" onClick={() => setShowSubjectForm(true)}
-                  className="inline-flex items-center gap-2 rounded-xl border border-dashed border-brand-300 bg-brand-50 px-4 py-2.5 text-sm font-semibold text-brand-700 transition hover:bg-brand-100">
-                  <PlusIcon /> Add New Subject
-                </button>
+                <GhostBtn onClick={() => setShowSubjectForm(true)}>
+                  <PlusIcon /> New Subject
+                </GhostBtn>
               )}
             </div>
           </div>
         </div>
       )}
 
-      {/* STAT CARDS */}
-      <section className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={<SubjectIcon size="md" />}   label="Active Subject"        value={selectedSubject?.subject_code || '—'} sub={selectedSubject?.title} accent="sky" />
-        <StatCard icon={<UsersIcon size="md" />}     label="Enrolled Students"     value={students.length}                                                      accent="violet" />
-        <StatCard icon={<ClipboardIcon size="md" />} label="Published Activities"  value={publishedActivities.length}                                           accent="emerald" />
-        <StatCard icon={<RiskIcon size="md" />}      label="At-Risk Students"      value={atRiskStudents.length}                                                accent={atRiskStudents.length > 0 ? 'amber' : 'slate'} />
-      </section>
-
       {/* MAIN CONTENT */}
       {selectedSubject && (
-        <div className="mt-6 space-y-5">
-
-          {/* TABBED PANEL */}
+        <div className="mt-6">
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-panel">
             {/* Tab bar header */}
-            <div className="flex items-center border-b border-slate-100 bg-slate-50/60 px-5 py-3">
+            <div className="flex items-center border-b border-slate-100 bg-slate-50/60 px-5 py-3 overflow-x-auto">
               <TabBar
                 activeTab={activeTab}
-                tabs={['roster', 'activities', 'announcements']}
-                counts={{ roster: students.length, activities: activities.length, announcements: announcements.length }}
+                tabs={tabs}
+                counts={tabCounts}
                 onChange={setActiveTab}
               />
             </div>
@@ -822,164 +1046,13 @@ export default function LmsDashboard({ scanCenter = null }) {
                 onPostAnnouncement={onPostAnnouncement}
               />
             )}
+            {activeTab === 'scan' && hasScanCenter && (
+              <ScanCenterTab scan={scan} />
+            )}
+            {activeTab === 'gradebook' && (
+              <GradebookTab gradebook={gradebook} atRiskStudents={atRiskStudents} />
+            )}
           </div>
-
-          {/* SCAN CENTER */}
-          {hasScanCenter && (
-            <CollapseSection open={scanOpen} onToggle={() => setScanOpen((v) => !v)}
-              header={<>
-                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-800 text-white"><ScanIcon /></span>
-                <div>
-                  <p className="text-sm font-bold text-slate-800">Scan Center</p>
-                  <p className="text-[11px] text-slate-400">{scan.exams?.length || 0} exam templates</p>
-                </div>
-                {scan.scanner?.scanner?.connected
-                  ? <Badge className="bg-emerald-100 text-emerald-700">Scanner Ready</Badge>
-                  : <Badge className="bg-amber-100 text-amber-600">Scanner Offline</Badge>}
-              </>}
-            >
-              <div className="p-6">
-                {scan.error && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{scan.error}</div>}
-                <div className="grid gap-6 xl:grid-cols-3">
-
-                  {/* Create exam */}
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2.5">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-100 text-brand-600"><DocIcon /></span>
-                      <h3 className="text-sm font-bold text-slate-800">Create Exam Template</h3>
-                    </div>
-                    <form onSubmit={scan.onCreateExam} className="space-y-3">
-                      <Field label="Upload PDF" hint="optional">
-                        <input type="file" accept="application/pdf,.pdf" onChange={scan.onExamPdfUpload}
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700" />
-                        {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
-                      </Field>
-                      <Field label="Exam Title"><TextInput required value={scan.examForm?.title || ''} onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))} placeholder="Midterm Exam — CS101" /></Field>
-                      <Field label="Total Items"><TextInput required type="number" min={1} max={200} value={scan.examForm?.total_items || ''} onChange={(e) => scan.onTotalItemsChange(e.target.value)} placeholder="50" /></Field>
-                      <Field label="Answer Key">
-                        <TextareaInput required ref={scan.answerKeyRef} value={scan.answerKeyDisplay || ''} onChange={() => {}} onKeyDown={scan.onAnswerKeyKeyDown} onPaste={scan.onAnswerKeyPaste} className="h-24 font-mono text-xs" placeholder="A" />
-                      </Field>
-                      <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">Save Exam</SubmitBtn>
-                    </form>
-                  </div>
-
-                  {/* Scanner controls */}
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2.5">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><ScanIcon /></span>
-                      <h3 className="text-sm font-bold text-slate-800">Scanner Controls</h3>
-                    </div>
-                    <form onSubmit={scan.onScan} className="space-y-3">
-                      <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
-                        <span className={`h-2 w-2 flex-shrink-0 rounded-full ${scan.scanner?.scanner?.connected ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
-                        <span className={`text-xs font-semibold ${scan.scanner?.scanner?.connected ? 'text-emerald-700' : 'text-amber-700'}`}>
-                          {scan.scanner?.scanner?.connected ? 'Device Connected' : 'Waiting for device…'}
-                        </span>
-                        <span className="ml-auto text-[11px] text-slate-400">{scan.scanner?.transport || 'n/a'}</span>
-                      </div>
-                      <Field label="Exam Template">
-                        <SelectInput required value={scan.scanRequest?.exam_id || ''} onChange={(e) => scan.setScanRequest({ exam_id: e.target.value })}>
-                          <option value="">Select exam template</option>
-                          {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-                        </SelectInput>
-                      </Field>
-                      <SubmitBtn disabled={scan.busy || !scan.scanRequest?.exam_id} colorClass="bg-slate-800 hover:bg-slate-700">Start Scan Job</SubmitBtn>
-                    </form>
-                  </div>
-
-                  {/* Manual submission */}
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2.5">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600"><PenIcon /></span>
-                      <h3 className="text-sm font-bold text-slate-800">Manual Submission</h3>
-                    </div>
-                    <form onSubmit={scan.onGrade} className="space-y-3">
-                      <Field label="Exam Template">
-                        <SelectInput required value={scan.gradeForm?.exam_id || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, exam_id: e.target.value }))}>
-                          <option value="">Select exam template</option>
-                          {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-                        </SelectInput>
-                      </Field>
-                      <Field label="Student Code"><TextInput required value={scan.gradeForm?.student_code || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))} placeholder="2021-00001" /></Field>
-                      <Field label="Answers">
-                        <TextareaInput required ref={scan.gradeAnswersRef} value={scan.gradeAnswersDisplay || ''} onChange={() => {}} onKeyDown={scan.onGradeAnswersKeyDown} onPaste={scan.onGradeAnswersPaste} className="h-24 font-mono text-xs" placeholder="A" />
-                      </Field>
-                      <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">Grade Submission</SubmitBtn>
-                    </form>
-                  </div>
-                </div>
-
-                {(scan.latestExam || scan.lastResult) && (
-                  <div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2">
-                    {scan.latestExam && (
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Latest Template</p>
-                        <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.latestExam.title}</p>
-                        <p className="mt-0.5 text-xs text-slate-500">{scan.latestExam.total_items} items</p>
-                      </div>
-                    )}
-                    {scan.lastResult && (
-                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                        <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
-                        <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}</p>
-                        <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </CollapseSection>
-          )}
-
-          {/* GRADEBOOK */}
-          <CollapseSection open={gradebookOpen} onToggle={() => setGradebookOpen((v) => !v)}
-            header={<>
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white"><GradebookIcon /></span>
-              <div>
-                <p className="text-sm font-bold text-slate-800">Gradebook</p>
-                <p className="text-[11px] text-slate-400">Submissions tied to student codes</p>
-              </div>
-              {gradebook.length > 0 && <Badge className="bg-emerald-100 text-emerald-700">{gradebook.length} students</Badge>}
-              {atRiskStudents.length > 0 && <Badge className="bg-amber-100 text-amber-700">{atRiskStudents.length} at-risk</Badge>}
-            </>}
-          >
-            <div className="p-6">
-              {gradebook.length ? (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-slate-100">
-                        {['Student', 'Code', 'Completed', 'Published', 'Average'].map((h) => (
-                          <th key={h} className="pb-3 pr-6 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {gradebook.map((row) => (
-                        <tr key={row.student_id} className="border-b border-slate-50 transition hover:bg-slate-50">
-                          <td className="py-3 pr-6">
-                            <div className="flex items-center gap-2.5">
-                              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">{initials(row.full_name)}</div>
-                              <span className="font-semibold text-slate-800">{row.full_name}</span>
-                            </div>
-                          </td>
-                          <td className="py-3 pr-6 font-mono text-xs text-slate-500">{row.student_code}</td>
-                          <td className="py-3 pr-6 text-slate-700">{row.completed_activities}</td>
-                          <td className="py-3 pr-6 text-slate-700">{row.published_activities}</td>
-                          <td className="py-3">
-                            <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${gradeBg(row)}`}>{formatPercent(row.average_percent)}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <EmptyState icon={<GradebookIcon size="lg" />} title="No gradebook data yet" description="Enroll students and post exam activities to see grades here." />
-              )}
-            </div>
-          </CollapseSection>
-
         </div>
       )}
     </main>
