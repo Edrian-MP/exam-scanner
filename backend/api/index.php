@@ -197,6 +197,68 @@ function ensure_lms_schema(): void
     }
 }
 
+function ensure_educators_schema(): void
+{
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    try {
+        db()->exec(
+            "CREATE TABLE IF NOT EXISTS educators (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                full_name VARCHAR(180) NOT NULL,
+                email VARCHAR(180) NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                profile_photo_data MEDIUMTEXT NULL,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_educator_email (email)
+            )"
+        );
+        $photoExistsStmt = db()->query("SHOW COLUMNS FROM educators LIKE 'profile_photo_data'");
+        $photoExists = $photoExistsStmt->fetch();
+        if (!$photoExists) {
+            db()->exec('ALTER TABLE educators ADD COLUMN profile_photo_data MEDIUMTEXT NULL AFTER password_hash');
+        }
+
+        $countStmt = db()->query('SELECT COUNT(*) AS c FROM educators');
+        $countRow = $countStmt->fetch();
+        $count = (int) ($countRow['c'] ?? 0);
+        if ($count < 1) {
+            $insert = db()->prepare(
+                'INSERT INTO educators (full_name, email, password_hash, is_active)
+                 VALUES (:full_name, :email, :password_hash, 1)'
+            );
+            $insert->execute([
+                ':full_name' => 'Default Educator',
+                ':email' => 'educator@example.com',
+                ':password_hash' => password_hash('password123', PASSWORD_DEFAULT),
+            ]);
+        }
+    } catch (Throwable $e) {
+        // Keep API usable even if schema changes are blocked.
+    }
+}
+
+function map_educator_public(array $row): array
+{
+    $photoData = null;
+    if (array_key_exists('profile_photo_data', $row) && $row['profile_photo_data'] !== null) {
+        $photoData = (string) $row['profile_photo_data'];
+    }
+
+    return [
+        'id' => (int) ($row['id'] ?? 0),
+        'full_name' => (string) ($row['full_name'] ?? ''),
+        'email' => (string) ($row['email'] ?? ''),
+        'profile_photo_data' => $photoData,
+    ];
+}
+
 function find_subject_or_404(int $subjectId): array
 {
     $stmt = db()->prepare('SELECT id, subject_code, title, term_label, description, created_at FROM subjects WHERE id = :id LIMIT 1');
@@ -210,6 +272,215 @@ function find_subject_or_404(int $subjectId): array
 
 ensure_submissions_exam_title_column();
 ensure_lms_schema();
+ensure_educators_schema();
+
+if ($path === '/auth/account' && $method === 'GET') {
+    $educatorId = (int) ($_GET['educator_id'] ?? 0);
+    if ($educatorId < 1) {
+        json_response(400, ['ok' => false, 'error' => 'educator_id is required']);
+    }
+
+    $stmt = db()->prepare(
+        'SELECT id, full_name, email, profile_photo_data, is_active
+         FROM educators
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $stmt->execute([':id' => $educatorId]);
+    $educator = $stmt->fetch();
+    if (!$educator || !(bool) ($educator['is_active'] ?? false)) {
+        json_response(404, ['ok' => false, 'error' => 'Educator not found']);
+    }
+
+    json_response(200, [
+        'ok' => true,
+        'data' => [
+            'educator' => map_educator_public($educator),
+        ],
+    ]);
+}
+
+if ($path === '/auth/account' && $method === 'POST') {
+    $payload = request_json();
+    $educatorId = (int) ($payload['educator_id'] ?? 0);
+    $fullName = trim((string) ($payload['full_name'] ?? ''));
+    $email = strtolower(trim((string) ($payload['email'] ?? '')));
+    $password = (string) ($payload['password'] ?? '');
+    $profilePhotoData = $payload['profile_photo_data'] ?? null;
+    $profilePhotoData = $profilePhotoData !== null ? trim((string) $profilePhotoData) : null;
+    if ($profilePhotoData === '') {
+        $profilePhotoData = null;
+    }
+
+    if ($educatorId < 1 || $fullName === '' || $email === '') {
+        json_response(400, ['ok' => false, 'error' => 'educator_id, full_name, and email are required']);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        json_response(400, ['ok' => false, 'error' => 'Invalid email address']);
+    }
+    if ($password !== '' && strlen($password) < 8) {
+        json_response(400, ['ok' => false, 'error' => 'Password must be at least 8 characters']);
+    }
+    if ($profilePhotoData !== null && strlen($profilePhotoData) > 2000000) {
+        json_response(400, ['ok' => false, 'error' => 'Profile photo is too large']);
+    }
+
+    $findStmt = db()->prepare(
+        'SELECT id, email, is_active
+         FROM educators
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $findStmt->execute([':id' => $educatorId]);
+    $existing = $findStmt->fetch();
+    if (!$existing || !(bool) ($existing['is_active'] ?? false)) {
+        json_response(404, ['ok' => false, 'error' => 'Educator not found']);
+    }
+
+    $dupeStmt = db()->prepare(
+        'SELECT id
+         FROM educators
+         WHERE email = :email AND id <> :id
+         LIMIT 1'
+    );
+    $dupeStmt->execute([
+        ':email' => $email,
+        ':id' => $educatorId,
+    ]);
+    if ($dupeStmt->fetch()) {
+        json_response(409, ['ok' => false, 'error' => 'An educator with this email already exists']);
+    }
+
+    if ($password !== '') {
+        $updateStmt = db()->prepare(
+            'UPDATE educators
+             SET full_name = :full_name,
+                 email = :email,
+                 profile_photo_data = :profile_photo_data,
+                 password_hash = :password_hash
+             WHERE id = :id'
+        );
+        $updateStmt->execute([
+            ':full_name' => $fullName,
+            ':email' => $email,
+            ':profile_photo_data' => $profilePhotoData,
+            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+            ':id' => $educatorId,
+        ]);
+    } else {
+        $updateStmt = db()->prepare(
+            'UPDATE educators
+             SET full_name = :full_name,
+                 email = :email,
+                 profile_photo_data = :profile_photo_data
+             WHERE id = :id'
+        );
+        $updateStmt->execute([
+            ':full_name' => $fullName,
+            ':email' => $email,
+            ':profile_photo_data' => $profilePhotoData,
+            ':id' => $educatorId,
+        ]);
+    }
+
+    $resultStmt = db()->prepare(
+        'SELECT id, full_name, email, profile_photo_data
+         FROM educators
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $resultStmt->execute([':id' => $educatorId]);
+    $educator = $resultStmt->fetch() ?: [];
+
+    json_response(200, [
+        'ok' => true,
+        'data' => [
+            'educator' => map_educator_public($educator),
+        ],
+    ]);
+}
+
+if ($path === '/auth/signup') {
+    ensure_method('POST');
+    $payload = request_json();
+    $fullName = trim((string) ($payload['full_name'] ?? ''));
+    $email = strtolower(trim((string) ($payload['email'] ?? '')));
+    $password = (string) ($payload['password'] ?? '');
+
+    if ($fullName === '' || $email === '' || $password === '') {
+        json_response(400, ['ok' => false, 'error' => 'full_name, email, and password are required']);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        json_response(400, ['ok' => false, 'error' => 'Invalid email address']);
+    }
+    if (strlen($password) < 8) {
+        json_response(400, ['ok' => false, 'error' => 'Password must be at least 8 characters']);
+    }
+
+    $existsStmt = db()->prepare('SELECT id FROM educators WHERE email = :email LIMIT 1');
+    $existsStmt->execute([':email' => $email]);
+    if ($existsStmt->fetch()) {
+        json_response(409, ['ok' => false, 'error' => 'An educator with this email already exists']);
+    }
+
+    $insert = db()->prepare(
+        'INSERT INTO educators (full_name, email, password_hash, is_active)
+         VALUES (:full_name, :email, :password_hash, 1)'
+    );
+    $insert->execute([
+        ':full_name' => $fullName,
+        ':email' => $email,
+        ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+    ]);
+
+    json_response(201, [
+        'ok' => true,
+        'data' => [
+            'educator' => [
+                'id' => (int) db()->lastInsertId(),
+                'full_name' => $fullName,
+                'email' => $email,
+                'profile_photo_data' => null,
+            ],
+        ],
+    ]);
+}
+
+if ($path === '/auth/login') {
+    ensure_method('POST');
+    $payload = request_json();
+    $email = strtolower(trim((string) ($payload['email'] ?? '')));
+    $password = (string) ($payload['password'] ?? '');
+
+    if ($email === '' || $password === '') {
+        json_response(400, ['ok' => false, 'error' => 'email and password are required']);
+    }
+
+    $stmt = db()->prepare(
+        'SELECT id, full_name, email, password_hash, profile_photo_data, is_active
+         FROM educators
+         WHERE email = :email
+         LIMIT 1'
+    );
+    $stmt->execute([':email' => $email]);
+    $educator = $stmt->fetch();
+
+    if (!$educator || !(bool) ($educator['is_active'] ?? false)) {
+        json_response(401, ['ok' => false, 'error' => 'Invalid credentials']);
+    }
+
+    $hash = (string) ($educator['password_hash'] ?? '');
+    if (!password_verify($password, $hash)) {
+        json_response(401, ['ok' => false, 'error' => 'Invalid credentials']);
+    }
+
+    json_response(200, [
+        'ok' => true,
+        'data' => [
+            'educator' => map_educator_public($educator),
+        ],
+    ]);
+}
 
 if ($path === '/health') {
     ensure_method('GET');

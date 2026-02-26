@@ -3,6 +3,8 @@ import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { API_BASE, apiGet, apiPost } from './lib/api'
 import LmsDashboard from './LmsDashboard'
+import LoginPage from './LoginPage'
+import AccountSettingsPage from './AccountSettingsPage'
 import useAnswerGrid from './hooks/useAnswerGrid'
 
 const defaultExam = {
@@ -12,6 +14,7 @@ const defaultExam = {
 }
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc
+const EDUCATOR_STORAGE_KEY = 'exam_scanner.educator'
 
 function createEmptyItems(total) {
   const parsed = Number(total)
@@ -117,6 +120,12 @@ async function extractPdfTextWithPdfJs(file) {
 }
 
 function App() {
+  const [educator, setEducator] = useState(null)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [showAccountSettings, setShowAccountSettings] = useState(false)
+  const [accountBusy, setAccountBusy] = useState(false)
+  const [accountError, setAccountError] = useState('')
   const [health, setHealth] = useState(null)
   const [scanner, setScanner] = useState(null)
   const [exams, setExams] = useState([])
@@ -173,8 +182,22 @@ function App() {
   }
 
   useEffect(() => {
-    bootstrap()
+    try {
+      const raw = localStorage.getItem(EDUCATOR_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (parsed && parsed.id) {
+        setEducator(parsed)
+      }
+    } catch {
+      // Ignore malformed local storage data.
+    }
   }, [])
+
+  useEffect(() => {
+    if (!educator) return
+    bootstrap()
+  }, [educator])
 
   useEffect(() => {
     const total = Number(selectedGradeExam?.total_items || 0)
@@ -313,40 +336,183 @@ function App() {
     setPdfImportStatus(nextStatus.join(' | '))
   }
 
+  async function onLogin(credentials) {
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const result = await apiPost('/auth/login', credentials)
+      const nextEducator = result?.data?.educator || null
+      if (!nextEducator?.id) {
+        throw new Error('Invalid login response from server.')
+      }
+      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      setEducator(nextEducator)
+    } catch (err) {
+      setAuthError(err.message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function onSignUp(payload) {
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const result = await apiPost('/auth/signup', payload)
+      const nextEducator = result?.data?.educator || null
+      if (!nextEducator?.id) {
+        throw new Error('Invalid signup response from server.')
+      }
+      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      setEducator(nextEducator)
+    } catch (err) {
+      setAuthError(err.message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  function onLogout() {
+    localStorage.removeItem(EDUCATOR_STORAGE_KEY)
+    setEducator(null)
+    setShowAccountSettings(false)
+    setLastResult(null)
+    setError('')
+  }
+
+  async function onSaveAccountSettings(payload) {
+    if (!educator?.id) return
+    setAccountBusy(true)
+    setAccountError('')
+    try {
+      const result = await apiPost('/auth/account', {
+        educator_id: educator.id,
+        ...payload,
+      })
+      const nextEducator = result?.data?.educator || null
+      if (!nextEducator?.id) {
+        throw new Error('Invalid account update response.')
+      }
+      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      setEducator(nextEducator)
+      setShowAccountSettings(false)
+    } catch (err) {
+      setAccountError(err.message)
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  if (!educator) {
+    return (
+      <LoginPage
+        apiBase={API_BASE}
+        onLogin={onLogin}
+        onSignUp={onSignUp}
+        busy={authBusy}
+        error={authError}
+      />
+    )
+  }
+
+  if (showAccountSettings) {
+    return (
+      <AccountSettingsPage
+        educator={educator}
+        busy={accountBusy}
+        error={accountError}
+        onSave={onSaveAccountSettings}
+        onCancel={() => {
+          setAccountError('')
+          setShowAccountSettings(false)
+        }}
+      />
+    )
+  }
+
+  const educatorInitials = (educator.full_name || '?')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('') || '?'
+
   return (
-    <LmsDashboard
-      scanCenter={{
-        apiBase: API_BASE,
-        health,
-        scanner,
-        exams,
-        examForm,
-        setExamForm,
-        onTotalItemsChange,
-        answerKeyRef,
-        answerKeyDisplay: answerKeyGrid.display,
-        onAnswerKeyKeyDown: answerKeyGrid.onKeyDown,
-        onAnswerKeyPaste: answerKeyGrid.onPaste,
-        pdfImportStatus,
-        onExamPdfUpload,
-        onCreateExam,
-        scanRequest,
-        setScanRequest,
-        onScan,
-        gradeForm,
-        setGradeForm,
-        selectedGradeExam,
-        gradeAnswersRef,
-        gradeAnswersDisplay: gradeAnswersGrid.display,
-        onGradeAnswersKeyDown: gradeAnswersGrid.onKeyDown,
-        onGradeAnswersPaste: gradeAnswersGrid.onPaste,
-        onGrade,
-        latestExam,
-        lastResult,
-        busy,
-        error,
-      }}
-    />
+    <>
+      <div className="mx-auto max-w-7xl px-4 pb-2 pt-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm backdrop-blur">
+          <div className="min-w-0 flex items-center gap-3">
+            {educator.profile_photo_data ? (
+              <img
+                src={educator.profile_photo_data}
+                alt="Educator avatar"
+                className="h-10 w-10 rounded-xl border border-slate-200 object-cover"
+              />
+            ) : (
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-xs font-bold text-slate-600">
+                {educatorInitials}
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Logged in educator</p>
+              <p className="truncate text-sm font-semibold text-slate-800">{educator.full_name} - {educator.email}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setAccountError('')
+                setShowAccountSettings(true)
+              }}
+              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+            >
+              Account Settings
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      </div>
+      <LmsDashboard
+        scanCenter={{
+          apiBase: API_BASE,
+          health,
+          scanner,
+          exams,
+          examForm,
+          setExamForm,
+          onTotalItemsChange,
+          answerKeyRef,
+          answerKeyDisplay: answerKeyGrid.display,
+          onAnswerKeyKeyDown: answerKeyGrid.onKeyDown,
+          onAnswerKeyPaste: answerKeyGrid.onPaste,
+          pdfImportStatus,
+          onExamPdfUpload,
+          onCreateExam,
+          scanRequest,
+          setScanRequest,
+          onScan,
+          gradeForm,
+          setGradeForm,
+          selectedGradeExam,
+          gradeAnswersRef,
+          gradeAnswersDisplay: gradeAnswersGrid.display,
+          onGradeAnswersKeyDown: gradeAnswersGrid.onKeyDown,
+          onGradeAnswersPaste: gradeAnswersGrid.onPaste,
+          onGrade,
+          latestExam,
+          lastResult,
+          busy,
+          error,
+        }}
+      />
+    </>
   )
 }
 
