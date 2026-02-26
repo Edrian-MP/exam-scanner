@@ -305,6 +305,7 @@ if ($path === '/auth/account' && $method === 'POST') {
     $educatorId = (int) ($payload['educator_id'] ?? 0);
     $fullName = trim((string) ($payload['full_name'] ?? ''));
     $email = strtolower(trim((string) ($payload['email'] ?? '')));
+    $currentPassword = (string) ($payload['current_password'] ?? '');
     $password = (string) ($payload['password'] ?? '');
     $profilePhotoData = $payload['profile_photo_data'] ?? null;
     $profilePhotoData = $profilePhotoData !== null ? trim((string) $profilePhotoData) : null;
@@ -321,12 +322,15 @@ if ($path === '/auth/account' && $method === 'POST') {
     if ($password !== '' && strlen($password) < 8) {
         json_response(400, ['ok' => false, 'error' => 'Password must be at least 8 characters']);
     }
+    if ($password !== '' && trim($currentPassword) === '') {
+        json_response(400, ['ok' => false, 'error' => 'current_password is required to change password']);
+    }
     if ($profilePhotoData !== null && strlen($profilePhotoData) > 2000000) {
         json_response(400, ['ok' => false, 'error' => 'Profile photo is too large']);
     }
 
     $findStmt = db()->prepare(
-        'SELECT id, email, is_active
+        'SELECT id, email, password_hash, is_active
          FROM educators
          WHERE id = :id
          LIMIT 1'
@@ -335,6 +339,12 @@ if ($path === '/auth/account' && $method === 'POST') {
     $existing = $findStmt->fetch();
     if (!$existing || !(bool) ($existing['is_active'] ?? false)) {
         json_response(404, ['ok' => false, 'error' => 'Educator not found']);
+    }
+    if ($password !== '') {
+        $hash = (string) ($existing['password_hash'] ?? '');
+        if ($hash === '' || !password_verify($currentPassword, $hash)) {
+            json_response(401, ['ok' => false, 'error' => 'Current password is incorrect']);
+        }
     }
 
     $dupeStmt = db()->prepare(

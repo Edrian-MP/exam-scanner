@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
   const [fullName, setFullName] = useState(educator?.full_name || '')
   const [email, setEmail] = useState(educator?.email || '')
+  const [currentPassword, setCurrentPassword] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [photoData, setPhotoData] = useState(educator?.profile_photo_data || null)
@@ -12,6 +13,9 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
     setFullName(educator?.full_name || '')
     setEmail(educator?.email || '')
     setPhotoData(educator?.profile_photo_data || null)
+    setCurrentPassword('')
+    setPassword('')
+    setConfirmPassword('')
   }, [educator])
 
   function handlePhotoUpload(event) {
@@ -52,6 +56,10 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
       setLocalError('Password must be at least 8 characters.')
       return
     }
+    if (password !== '' && currentPassword.trim() === '') {
+      setLocalError('Current password is required to change your password.')
+      return
+    }
     if (password !== confirmPassword) {
       setLocalError('Password confirmation does not match.')
       return
@@ -60,6 +68,7 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
     onSave({
       full_name: fullName.trim(),
       email: email.trim().toLowerCase(),
+      current_password: currentPassword,
       password,
       profile_photo_data: photoData,
     })
@@ -140,6 +149,18 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
             </label>
 
             <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block space-y-1.5 sm:col-span-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Current Password</span>
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="Required to change password"
+                  autoComplete="current-password"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                />
+              </label>
+
               <label className="block space-y-1.5">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">New Password</span>
                 <input
@@ -147,6 +168,7 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Leave blank to keep current"
+                  autoComplete="new-password"
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
                 />
               </label>
@@ -158,6 +180,7 @@ function AccountSettingsPage({ educator, busy, error, onSave, onCancel }) {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Repeat new password"
+                  autoComplete="new-password"
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
                 />
               </label>
