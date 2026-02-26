@@ -731,7 +731,151 @@ function GradebookTab({ gradebook, atRiskStudents }) {
     </div>
   )
 }
+/* ═══════════════════════════════════════════════════════
+   SUBJECT CARDS HOMEPAGE
+═══════════════════════════════════════════════════════ */
+function SubjectHomepage({ subjects, onSelect, showSubjectForm, setShowSubjectForm, subjectForm, setSubjectForm, busyAction, onCreateSubject }) {
+  const totalStudents   = subjects.reduce((n, s) => n + Number(s.student_count || 0), 0)
+  const totalActivities = subjects.reduce((n, s) => n + Number(s.activity_count || 0), 0)
+  const totalPublished  = subjects.reduce((n, s) => n + Number(s.published_activity_count || 0), 0)
 
+  return (
+    <div className="mt-6 space-y-5">
+
+      {/* ── Aggregate stat strip ─────────────────────── */}
+      {subjects.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { label: 'Subjects',    value: subjects.length,   icon: <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>,          accent: 'text-brand-600',  bg: 'bg-brand-50'   },
+            { label: 'Students',    value: totalStudents,     icon: <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" /></svg>, accent: 'text-sky-600',   bg: 'bg-sky-50'    },
+            { label: 'Activities',  value: totalActivities,   icon: <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" /></svg>, accent: 'text-violet-600', bg: 'bg-violet-50' },
+            { label: 'Published',   value: totalPublished,    icon: <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,                       accent: 'text-emerald-600', bg: 'bg-emerald-50' },
+          ].map(({ label, value, icon, accent, bg }) => (
+            <div key={label} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+              <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl ${bg} ${accent}`}>{icon}</div>
+              <div>
+                <p className="text-2xl font-bold text-slate-800 leading-none">{value}</p>
+                <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-widest text-slate-400">{label}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Subject cards grid ───────────────────────── */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <h2 className="text-sm font-bold text-slate-700">Your Subjects</h2>
+          {!showSubjectForm && (
+            <button
+              type="button"
+              onClick={() => setShowSubjectForm(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+              New Subject
+            </button>
+          )}
+        </div>
+
+        <div className="p-5 space-y-4">
+
+          {/* Inline create form */}
+          {showSubjectForm && (
+            <form onSubmit={onCreateSubject} className="grid gap-3 rounded-xl border border-brand-200 bg-brand-50/50 p-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="Subject Code">
+                <TextInput required value={subjectForm.subject_code} onChange={(e) => setSubjectForm((p) => ({ ...p, subject_code: e.target.value }))} placeholder="CS101" />
+              </Field>
+              <Field label="Title">
+                <TextInput required value={subjectForm.title} onChange={(e) => setSubjectForm((p) => ({ ...p, title: e.target.value }))} placeholder="Introduction to Computing" />
+              </Field>
+              <Field label="Term" hint="optional">
+                <TextInput value={subjectForm.term_label} onChange={(e) => setSubjectForm((p) => ({ ...p, term_label: e.target.value }))} placeholder="AY 2024–2025 S1" />
+              </Field>
+              <div className="flex items-end gap-2">
+                <SubmitBtn disabled={busyAction === 'subject'} colorClass="bg-brand-600 hover:bg-brand-700" className="flex-1">
+                  {busyAction === 'subject' ? <><SpinIcon /> Saving…</> : 'Create'}
+                </SubmitBtn>
+                <GhostBtn type="button" onClick={() => setShowSubjectForm(false)}><XIcon /></GhostBtn>
+              </div>
+            </form>
+          )}
+
+          {/* Cards */}
+          {subjects.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {subjects.map((s) => {
+                const published = Number(s.published_activity_count || 0)
+                const total     = Number(s.activity_count || 0)
+                const pct       = total > 0 ? Math.round((published / total) * 100) : 0
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => onSelect(String(s.id))}
+                    className="group flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
+                  >
+                    {/* Code + term */}
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-brand-500">{s.subject_code}</span>
+                      {s.term_label && (
+                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 group-hover:bg-brand-100 group-hover:text-brand-600 transition">
+                          {s.term_label}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Title */}
+                    <p className="mt-2 text-sm font-semibold leading-snug text-slate-800">{s.title}</p>
+
+                    {/* Stats row */}
+                    <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-400">
+                      <span className="flex items-center gap-1">
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>
+                        {s.student_count}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z" /></svg>
+                        {total}
+                      </span>
+                    </div>
+
+                    {/* Progress bar — published vs total activities */}
+                    {total > 0 && (
+                      <div className="mt-3">
+                        <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                          <span>{published} published</span>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="h-1 rounded-full bg-slate-200">
+                          <div
+                            className="h-1 rounded-full bg-emerald-400 transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Open cue */}
+                    <div className="mt-3 flex items-center gap-1 text-[11px] font-semibold text-brand-500 opacity-0 group-hover:opacity-100 transition">
+                      Open subject
+                      <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></svg>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 py-14 text-center">
+              <p className="text-sm font-semibold text-slate-500">No subjects yet</p>
+              <p className="mt-1 text-xs text-slate-400">Click <span className="font-semibold">New Subject</span> above to create your first class.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 /* ═══════════════════════════════════════════════════════
    MAIN DASHBOARD
 ═══════════════════════════════════════════════════════ */
@@ -881,7 +1025,7 @@ export default function LmsDashboard({ scanCenter = null }) {
 
   /* ── render ─────────────────────────────────────────── */
   return (
-    <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <main className="mx-auto max-w-7xl px-4 pt-3 pb-6 sm:px-6 lg:px-8">
 
       {/* HEADER */}
       <section className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-panel backdrop-blur">
@@ -896,13 +1040,6 @@ export default function LmsDashboard({ scanCenter = null }) {
             </div>
             <h1 className="text-lg font-bold tracking-tight text-slate-900">Classroom Command</h1>
           </div>
-          {hasScanCenter && (
-            <div className="flex flex-shrink-0 items-center gap-2">
-              <StatusPill label="Backend"  ok={scan.health?.ok} okText="Online"      failText="Offline"  />
-              <StatusPill label="Database" ok={scan.health?.db} okText="MySQL Ready" failText="Check DB" />
-              <StatusPill count={scan.exams?.length || 0} label="Templates" />
-            </div>
-          )}
         </div>
 
         {/* Stat strip */}
@@ -926,14 +1063,14 @@ export default function LmsDashboard({ scanCenter = null }) {
 
       {/* SUBJECT BAR */}
       <section className="mt-5 flex flex-wrap items-center gap-3">
-        <button type="button" onClick={() => setSubjectsPanelOpen((v) => !v)}
+        {/* <button type="button" onClick={() => setSubjectsPanelOpen((v) => !v)}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
         >
           <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           {subjectsPanelOpen ? 'Close Subjects' : 'Switch Subject'}
-        </button>
+        </button> */}
 
-        {selectedSubject ? (
+        {selectedSubject && (
           <div className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5">
             <span className="text-xs font-bold uppercase tracking-widest text-brand-500">{selectedSubject.subject_code}</span>
             <span className="h-3.5 w-px bg-brand-200" />
@@ -942,9 +1079,8 @@ export default function LmsDashboard({ scanCenter = null }) {
               <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-600">{selectedSubject.term_label}</span>
             )}
           </div>
-        ) : (
-          <p className="text-sm text-slate-400">No subject selected — open the panel to choose one.</p>
-        )}
+        ) 
+      }
 
         {loading && (
           <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-400">
@@ -1012,9 +1148,10 @@ export default function LmsDashboard({ scanCenter = null }) {
       )}
 
       {/* MAIN CONTENT */}
-      {selectedSubject && (
+      {selectedSubject ? (
         <div className="mt-6">
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-panel">
+
             {/* Tab bar header */}
             <div className="flex items-center border-b border-slate-100 bg-slate-50/60 px-5 py-3 overflow-x-auto">
               <TabBar
@@ -1053,6 +1190,207 @@ export default function LmsDashboard({ scanCenter = null }) {
               <GradebookTab gradebook={gradebook} atRiskStudents={atRiskStudents} />
             )}
           </div>
+        </div>
+
+      ) : (
+
+        <div className="mt-6 space-y-5">
+
+          {/* ── Aggregate stat strip (only when subjects exist) ── */}
+          {subjects.length > 0 && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {[
+                {
+                  label: 'Subjects',
+                  value: subjects.length,
+                  accent: 'text-brand-600',
+                  bg: 'bg-brand-50',
+                  icon: (
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                    </svg>
+                  ),
+                },
+                {
+                  label: 'Students',
+                  value: subjects.reduce((n, s) => n + Number(s.student_count || 0), 0),
+                  accent: 'text-sky-600',
+                  bg: 'bg-sky-50',
+                  icon: (
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+                    </svg>
+                  ),
+                },
+                {
+                  label: 'Activities',
+                  value: subjects.reduce((n, s) => n + Number(s.activity_count || 0), 0),
+                  accent: 'text-violet-600',
+                  bg: 'bg-violet-50',
+                  icon: (
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z" />
+                    </svg>
+                  ),
+                },
+                {
+                  label: 'Published',
+                  value: subjects.reduce((n, s) => n + Number(s.published_activity_count || 0), 0),
+                  accent: 'text-emerald-600',
+                  bg: 'bg-emerald-50',
+                  icon: (
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  ),
+                },
+              ].map(({ label, value, accent, bg, icon }) => (
+                <div key={label} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+                  <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl ${bg} ${accent}`}>
+                    {icon}
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-slate-800 leading-none">{value}</p>
+                    <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-widest text-slate-400">{label}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── Subject cards grid ── */}
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <h2 className="text-sm font-bold text-slate-700">Your Subjects</h2>
+              {!showSubjectForm && (
+                <button
+                  type="button"
+                  onClick={() => setShowSubjectForm(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                >
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  New Subject
+                </button>
+              )}
+            </div>
+
+            <div className="p-5 space-y-4">
+
+              {/* Inline create form */}
+              {showSubjectForm && (
+                <form onSubmit={onCreateSubject} className="grid gap-3 rounded-xl border border-brand-200 bg-brand-50/50 p-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <Field label="Subject Code">
+                    <TextInput required value={subjectForm.subject_code}
+                      onChange={(e) => setSubjectForm((p) => ({ ...p, subject_code: e.target.value }))}
+                      placeholder="CS101" />
+                  </Field>
+                  <Field label="Title">
+                    <TextInput required value={subjectForm.title}
+                      onChange={(e) => setSubjectForm((p) => ({ ...p, title: e.target.value }))}
+                      placeholder="Introduction to Computing" />
+                  </Field>
+                  <Field label="Term" hint="optional">
+                    <TextInput value={subjectForm.term_label}
+                      onChange={(e) => setSubjectForm((p) => ({ ...p, term_label: e.target.value }))}
+                      placeholder="AY 2024–2025 S1" />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <SubmitBtn disabled={busyAction === 'subject'} colorClass="bg-brand-600 hover:bg-brand-700" className="flex-1">
+                      {busyAction === 'subject' ? <><SpinIcon /> Saving…</> : 'Create'}
+                    </SubmitBtn>
+                    <GhostBtn type="button" onClick={() => setShowSubjectForm(false)}><XIcon /></GhostBtn>
+                  </div>
+                </form>
+              )}
+
+              {/* Cards */}
+              {subjects.length > 0 ? (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {subjects.map((s) => {
+                    const published = Number(s.published_activity_count || 0)
+                    const total     = Number(s.activity_count || 0)
+                    const pct       = total > 0 ? Math.round((published / total) * 100) : 0
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setSelectedSubjectId(String(s.id))}
+                        className="group flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
+                      >
+                        {/* Code + term badge */}
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-[11px] font-bold uppercase tracking-widest text-brand-500">
+                            {s.subject_code}
+                          </span>
+                          {s.term_label && (
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 transition group-hover:bg-brand-100 group-hover:text-brand-600">
+                              {s.term_label}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Title */}
+                        <p className="mt-2 text-sm font-semibold leading-snug text-slate-800">
+                          {s.title}
+                        </p>
+
+                        {/* Stats row */}
+                        <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                            </svg>
+                            {s.student_count}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z" />
+                            </svg>
+                            {total}
+                          </span>
+                        </div>
+
+                        {/* Published progress bar */}
+                        {total > 0 && (
+                          <div className="mt-3">
+                            <div className="mb-1 flex justify-between text-[10px] text-slate-400">
+                              <span>{published} published</span>
+                              <span>{pct}%</span>
+                            </div>
+                            <div className="h-1 rounded-full bg-slate-200">
+                              <div
+                                className="h-1 rounded-full bg-emerald-400 transition-all"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Hover cue */}
+                        <div className="mt-3 flex items-center gap-1 text-[11px] font-semibold text-brand-500 opacity-0 transition group-hover:opacity-100">
+                          Open subject
+                          <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                          </svg>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 py-14 text-center">
+                  <p className="text-sm font-semibold text-slate-500">No subjects yet</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Click <span className="font-semibold">New Subject</span> above to create your first class.
+                  </p>
+                </div>
+              )}
+
+            </div>
+          </div>
+
         </div>
       )}
     </main>
