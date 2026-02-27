@@ -1,6 +1,159 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
+import * as XLSX from 'xlsx'
 
+/* CLASSLIST IMPORT HOOK */
+function withEducatorId(path, educatorId) {
+  if (!educatorId) return path
+  const joiner = path.includes('?') ? '&' : '?'
+  return path + joiner + 'educator_id=' + encodeURIComponent(String(educatorId))
+}
+
+function parseRowsFromSheet(rows) {
+  const headerIdx = rows.findIndex(
+    (r) => String(r[0] ?? '').toLowerCase().includes('school') ||
+           String(r[0] ?? '').toLowerCase().includes('id')
+  )
+  const dataRows = headerIdx >= 0 ? rows.slice(headerIdx + 1) : rows.slice(3)
+  return dataRows
+    .filter((r) => r[0] && r[1])
+    .map((r) => ({
+      student_code: String(r[0]).trim(),
+      surname: String(r[1]).trim(),
+      given_name: String(r[2] ?? '').trim(),
+      middle_name: String(r[3] ?? '').trim(),
+      email: String(r[4] ?? '').trim(),
+    }))
+}
+
+async function parseXlsx(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1 })
+        resolve(parseRowsFromSheet(rows))
+      } catch (err) {
+        reject(err)
+      }
+    }
+    reader.onerror = reject
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+async function parsePdf(file) {
+  const pdfjsLib = await import('pdfjs-dist')
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).href
+
+  const arrayBuffer = await file.arrayBuffer()
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const lines = []
+  for (let p = 1; p <= pdf.numPages; p += 1) {
+    const page = await pdf.getPage(p)
+    const content = await page.getTextContent()
+    const byY = {}
+    for (const item of content.items) {
+      const y = Math.round(item.transform[5])
+      if (!byY[y]) byY[y] = []
+      byY[y].push(item.str)
+    }
+    const sortedYs = Object.keys(byY).map(Number).sort((a, b) => b - a)
+    for (const y of sortedYs) {
+      lines.push(byY[y].join('\t'))
+    }
+  }
+
+  const headerIdx = lines.findIndex(
+    (l) => /school\s*id/i.test(l) || /surname/i.test(l)
+  )
+  const dataLines = headerIdx >= 0 ? lines.slice(headerIdx + 1) : lines
+
+  return dataLines
+    .map((l) => l.split(/\t+/).map((s) => s.trim()).filter(Boolean))
+    .filter((cols) => cols.length >= 2 && /^\d{4}-\d+/.test(cols[0]))
+    .map(([student_code, surname, given_name = '', middle_name = '', email = '']) => ({
+      student_code,
+      surname,
+      given_name,
+      middle_name,
+      email,
+    }))
+}
+
+function useImportClasslist({ subjectId, educatorId, onDone }) {
+  const [status, setStatus] = useState('idle')
+  const [preview, setPreview] = useState(null)
+  const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const [errorMsg, setErrorMsg] = useState('')
+  const inputRef = useRef(null)
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setStatus('parsing')
+    setErrorMsg('')
+    try {
+      const isPdf = file.name.toLowerCase().endsWith('.pdf')
+      const students = isPdf ? await parsePdf(file) : await parseXlsx(file)
+      if (!students.length) throw new Error('No student rows found. Check the file format.')
+      setPreview(students)
+      setStatus('idle')
+    } catch (err) {
+      setErrorMsg(err.message || 'Unable to parse classlist file.')
+      setStatus('error')
+    }
+    e.target.value = ''
+  }
+
+  async function handleImport() {
+    if (!preview?.length || !subjectId) return
+    setStatus('importing')
+    setProgress({ done: 0, total: preview.length })
+    let done = 0
+    const errors = []
+    for (const student of preview) {
+      try {
+        await apiPost(
+          withEducatorId('/lms/subjects/' + subjectId + '/students', educatorId),
+          student
+        )
+      } catch (err) {
+        const message = err?.message || 'Import failed'
+        errors.push(student.student_code + ': ' + message)
+      }
+      done += 1
+      setProgress({ done, total: preview.length })
+    }
+
+    setStatus('done')
+    setPreview(null)
+    setErrorMsg(errors.length ? 'Imported with ' + errors.length + ' error(s):\n' + errors.join('\n') : '')
+    if (onDone) await onDone()
+  }
+
+  function reset() {
+    setPreview(null)
+    setStatus('idle')
+    setErrorMsg('')
+  }
+
+  return {
+    status,
+    preview,
+    progress,
+    errorMsg,
+    inputRef,
+    handleFile,
+    handleImport,
+    reset,
+  }
+}
 /* ─── form defaults ─────────────────────────────────── */
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
 const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
@@ -293,10 +446,129 @@ function TabBar({ activeTab, tabs, counts, onChange }) {
 /* ═══════════════════════════════════════════════════════
    ROSTER TAB
 ═══════════════════════════════════════════════════════ */
+function ImportClasslistButton({ subjectId, educatorId, onDone }) {
+  const {
+    status,
+    preview,
+    progress,
+    errorMsg,
+    inputRef,
+    handleFile,
+    handleImport,
+    reset,
+  } = useImportClasslist({ subjectId, educatorId, onDone })
+
+  return (
+    <div className="flex flex-col gap-3">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".xlsx,.xls,.pdf"
+        className="hidden"
+        onChange={handleFile}
+      />
+
+      {!preview && status !== 'importing' && (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={status === 'parsing'}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
+        >
+          {status === 'parsing' ? (
+            <><SpinIcon /> Parsing?</>
+          ) : (
+            <>
+              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
+                <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+              </svg>
+              Import Classlist
+            </>
+          )}
+        </button>
+      )}
+
+      {status === 'importing' && (
+        <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs text-violet-700">
+          <div className="mb-1.5 flex items-center gap-2">
+            <SpinIcon /> Importing {progress.done}/{progress.total} students?
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-100">
+            <div
+              className="h-full rounded-full bg-violet-500 transition-all duration-300"
+              style={{ width: progress.total > 0 ? ((progress.done / progress.total) * 100) + '%' : '0%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {preview && status !== "importing" && (
+        <div className="overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-violet-100 bg-violet-50 px-3 py-2">
+            <span className="text-xs font-bold text-violet-700">
+              {preview.length} students found ? ready to import
+            </span>
+            <button type="button" onClick={reset} className="text-slate-400 hover:text-slate-600">
+              <XIcon />
+            </button>
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-50">
+                <tr>
+                  {['ID', 'Surname', 'Given Name', 'Middle Name'].map((h) => (
+                    <th key={h} className="px-3 py-1.5 text-left font-semibold text-slate-500">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {preview.map((s, i) => (
+                  <tr key={i} className="hover:bg-slate-50">
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{s.student_code}</td>
+                    <td className="px-3 py-1.5 text-slate-700">{s.surname}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{s.given_name}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{s.middle_name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex gap-2 border-t border-slate-100 p-3">
+            <button
+              type="button"
+              onClick={handleImport}
+              className="flex-1 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-700"
+            >
+              Confirm Import
+            </button>
+            <button
+              type="button"
+              onClick={reset}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === 'done' && !errorMsg && (
+        <p className="text-xs font-semibold text-emerald-600">Import complete!</p>
+      )}
+      {errorMsg && (
+        <p className="whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{errorMsg}</p>
+      )}
+    </div>
+  )
+}
 function RosterTab({
+  subjectId,
+  educatorId,
   students, studentForm, setStudentForm, busyAction,
   editingStudentId, editStudentForm, setEditStudentForm,
   onAddStudent, onStartEditStudent, onEditStudent, onCancelEditStudent, onRemoveStudent, onDeleteSubject,
+  onImportDone,
 }) {
   const a = TAB_META.roster.accent
   return (
@@ -308,6 +580,12 @@ function RosterTab({
           <h3 className="text-base font-bold text-slate-800">Enroll a Student</h3>
           <p className="mt-0.5 text-xs text-slate-500">Add students to this subject's class list.</p>
         </div>
+
+        <ImportClasslistButton
+          subjectId={subjectId}
+          educatorId={educatorId}
+          onDone={onImportDone}
+        />
 
         <form onSubmit={onAddStudent} className="flex flex-1 flex-col gap-4">
           <Field label="Student ID / Code">
@@ -1535,6 +1813,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
             {/* Tab content */}
             {activeTab === 'roster' && (
               <RosterTab
+                subjectId={selectedSubjectId}
+                educatorId={educatorId}
                 students={students} studentForm={studentForm} setStudentForm={setStudentForm}
                 busyAction={busyAction}
                 editingStudentId={editingStudentId}
@@ -1544,7 +1824,9 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 onStartEditStudent={onStartEditStudent}
                 onEditStudent={onEditStudent}
                 onCancelEditStudent={onCancelEditStudent}
-                onRemoveStudent={onRemoveStudent} onDeleteSubject={onDeleteSubject}
+                onRemoveStudent={onRemoveStudent}
+                onDeleteSubject={onDeleteSubject}
+                onImportDone={() => refreshSubjectAndHomepage(selectedSubjectId)}
               />
             )}
             {activeTab === 'activities' && (
