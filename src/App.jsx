@@ -15,6 +15,7 @@ const defaultExam = {
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc
 const EDUCATOR_STORAGE_KEY = 'exam_scanner.educator'
+const THEME_STORAGE_KEY = 'exam_scanner.theme'
 
 function createEmptyItems(total) {
   const parsed = Number(total)
@@ -120,6 +121,13 @@ async function extractPdfTextWithPdfJs(file) {
 }
 
 function App() {
+  const [isNightMode, setIsNightMode] = useState(() => {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) === 'night'
+    } catch {
+      return false
+    }
+  })
   const [educator, setEducator] = useState(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
@@ -180,6 +188,21 @@ function App() {
       setError(err.message)
     }
   }
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (isNightMode) {
+      root.classList.add('night-mode')
+    } else {
+      root.classList.remove('night-mode')
+    }
+
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, isNightMode ? 'night' : 'day')
+    } catch {
+      // Ignore storage failures (private mode, quota, etc.).
+    }
+  }, [isNightMode])
 
   useEffect(() => {
     try {
@@ -465,6 +488,15 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsNightMode((prev) => !prev)}
+              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+              aria-pressed={isNightMode}
+              title="Toggle night mode"
+            >
+              {isNightMode ? 'Day Mode' : 'Night Mode'}
+            </button>
             <button
               type="button"
               onClick={() => {

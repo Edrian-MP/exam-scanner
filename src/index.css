@@ -54,8 +54,18 @@ body {
   background-color: rgb(15 23 42 / 0.82) !important;
 }
 
+.night-mode .bg-white\/90,
+.night-mode .bg-white\/80,
+.night-mode .bg-white\/60 {
+  background-color: rgb(15 23 42 / 0.9) !important;
+}
+
 .night-mode .bg-white {
   background-color: #0f172a !important;
+}
+
+.night-mode .bg-slate-50\/60 {
+  background-color: rgb(17 24 39 / 0.9) !important;
 }
 
 .night-mode .bg-slate-50 {
@@ -66,8 +76,16 @@ body {
   background-color: #1f2937 !important;
 }
 
+.night-mode .bg-slate-200 {
+  background-color: #334155 !important;
+}
+
 .night-mode .border-slate-200\/80 {
   border-color: rgb(71 85 105 / 0.8) !important;
+}
+
+.night-mode .border-slate-100 {
+  border-color: #1e293b !important;
 }
 
 .night-mode .border-slate-200,
@@ -76,7 +94,9 @@ body {
 }
 
 .night-mode .text-ink,
-.night-mode .text-slate-700 {
+.night-mode .text-slate-700,
+.night-mode .text-slate-800,
+.night-mode .text-slate-900 {
   color: #ffffff !important;
 }
 
@@ -86,6 +106,56 @@ body {
 
 .night-mode .text-slate-500 {
   color: #94a3b8 !important;
+}
+
+.night-mode .text-slate-400 {
+  color: #cbd5e1 !important;
+}
+
+.night-mode .text-slate-300 {
+  color: #e2e8f0 !important;
+}
+
+.night-mode .bg-brand-50,
+.night-mode .bg-brand-50\/50,
+.night-mode .bg-brand-50\/40 {
+  background-color: rgb(14 116 144 / 0.22) !important;
+}
+
+.night-mode .bg-brand-100 {
+  background-color: rgb(14 116 144 / 0.32) !important;
+}
+
+.night-mode .border-brand-200,
+.night-mode .border-brand-300 {
+  border-color: rgb(125 211 252 / 0.45) !important;
+}
+
+.night-mode .text-brand-500,
+.night-mode .text-brand-600,
+.night-mode .text-brand-700,
+.night-mode .text-brand-800 {
+  color: #7dd3fc !important;
+}
+
+.night-mode .bg-emerald-50 {
+  background-color: rgb(5 150 105 / 0.2) !important;
+}
+
+.night-mode .bg-emerald-100 {
+  background-color: rgb(5 150 105 / 0.3) !important;
+}
+
+.night-mode .border-emerald-200,
+.night-mode .border-emerald-100 {
+  border-color: rgb(52 211 153 / 0.45) !important;
+}
+
+.night-mode .text-emerald-500,
+.night-mode .text-emerald-600,
+.night-mode .text-emerald-700,
+.night-mode .text-emerald-700\/80 {
+  color: #6ee7b7 !important;
 }
 
 .night-mode input,
