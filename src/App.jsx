@@ -297,6 +297,12 @@ function App() {
     })
   }
 
+  function onClearExamDraft() {
+    setExamForm(defaultExam)
+    setAnswerKeyItems(createEmptyItems(defaultExam.total_items))
+    setPdfImportStatus('')
+  }
+
   async function onExamPdfUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -495,7 +501,9 @@ function App() {
           onAnswerKeyPaste: answerKeyGrid.onPaste,
           pdfImportStatus,
           onExamPdfUpload,
+          onClearExamDraft,
           onCreateExam,
+          onRefreshExams: bootstrap,
           scanRequest,
           setScanRequest,
           onScan,

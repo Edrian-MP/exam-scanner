@@ -157,7 +157,7 @@ function useImportClasslist({ subjectId, educatorId, onDone }) {
 /* ─── form defaults ─────────────────────────────────── */
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
 const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
-const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', max_score: 100, due_at: '', publish_status: 'draft' }
+const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', max_score: '', due_at: '', publish_status: 'draft' }
 const emptyAnnouncementForm = { title: '', body: '' }
 
 /* ─── utils ─────────────────────────────────────────── */
@@ -199,6 +199,29 @@ function relativeTime(dateStr) {
   if (hours < 24) return `${hours}h ago`
   if (days < 7)   return `${days}d ago`
   return d.toLocaleDateString()
+}
+
+function filenameToTitle(filename = '') {
+  return String(filename || '').replace(/\.[^.]+$/, '').trim()
+}
+
+function parseAnswerGridDisplay(display = '') {
+  return String(display || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\d+\s*[.)-]?\s*/, '').trim().toUpperCase())
+    .filter(Boolean)
+}
+
+function isValidAnswerToken(token) {
+  return /^[A-Z](\/[A-Z])*$/.test(String(token || '').trim())
+}
+
+function normalizeStoredAnswerKey(raw = '') {
+  return String(raw || '')
+    .split(/[|\r\n]+/)
+    .map((token) => token.trim().toUpperCase())
+    .filter(Boolean)
+    .join('|')
 }
 
 /* ─── design tokens ────────────────────────────────── */
@@ -783,8 +806,11 @@ function ActivitiesTab({
   activityForm,
   setActivityForm,
   scan,
+  activityAttachmentName,
   busyAction,
   editingActivityId,
+  onActivityExamPdfUpload,
+  onRemoveActivityExamPdf,
   onCreateActivity,
   onStartEditActivity,
   onCancelEditActivity,
@@ -792,7 +818,22 @@ function ActivitiesTab({
   onDeleteActivity,
 }) {
   const a = TAB_META.activities.accent
-  const examTemplates = scan?.exams || []
+  const isCreateMode = !editingActivityId
+  const hasAttachment = Boolean(activityAttachmentName)
+  const shouldAutoTitle = isCreateMode && hasAttachment
+  const uploadAnswerCount = parseAnswerGridDisplay(scan?.answerKeyDisplay || '').length
+  const isUploadedAnswerKeyLocked = isCreateMode && hasAttachment && uploadAnswerCount > 0
+  const activityPdfInputRef = useRef(null)
+  const [showUploadDetails, setShowUploadDetails] = useState(false)
+
+  useEffect(() => {
+    if (hasAttachment) {
+      setShowUploadDetails(true)
+    } else {
+      setShowUploadDetails(false)
+    }
+  }, [hasAttachment])
+
   return (
     <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
 
@@ -800,70 +841,91 @@ function ActivitiesTab({
       <div className="flex flex-col gap-5 p-6">
         <div>
           <h3 className="text-base font-bold text-slate-800">{editingActivityId ? 'Edit Activity' : 'New Activity'}</h3>
-          <p className="mt-0.5 text-xs text-slate-500">
-            {editingActivityId ? 'Update this activity details.' : 'Create exams, quizzes, or graded activities.'}
-          </p>
         </div>
 
-        {scan?.onCreateExam && (
-          <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
-            <div className="mb-3">
-              <h4 className="text-sm font-bold text-slate-800">Create Exam Template</h4>
-              <p className="mt-0.5 text-xs text-slate-500">Build answer keys here, then link the template to your activity below.</p>
-            </div>
-            <form onSubmit={scan.onCreateExam} className="space-y-3">
-              <Field label="Upload PDF" hint="optional">
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  onChange={scan.onExamPdfUpload}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
-                />
-                {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
-              </Field>
-              <Field label="Template Title">
-                <TextInput
-                  required
-                  value={scan.examForm?.title || ''}
-                  onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))}
-                  placeholder="Midterm Exam - CS101"
-                />
-              </Field>
-              <Field label="Total Items">
-                <TextInput
-                  required
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={scan.examForm?.total_items || ''}
-                  onChange={(e) => scan.onTotalItemsChange(e.target.value)}
-                  placeholder="50"
-                />
-              </Field>
-              <Field label="Answer Key">
-                <TextareaInput
-                  required
-                  ref={scan.answerKeyRef}
-                  value={scan.answerKeyDisplay || ''}
-                  onChange={() => {}}
-                  onKeyDown={scan.onAnswerKeyKeyDown}
-                  onPaste={scan.onAnswerKeyPaste}
-                  className="h-28 font-mono text-sm leading-6"
-                  placeholder="A"
-                />
-              </Field>
-              <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">
-                {scan.busy ? <><SpinIcon /> Saving...</> : 'Save Template'}
-              </SubmitBtn>
-            </form>
-          </div>
-        )}
-
         <form onSubmit={editingActivityId ? onEditActivity : onCreateActivity} className="flex flex-1 flex-col gap-4">
-          <Field label="Activity Title">
-            <TextInput required value={activityForm.title}
+          {scan?.onExamPdfUpload && isCreateMode && (
+            <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
+              <div className="space-y-3">
+                <Field label="Upload PDF" hint="optional">
+                  <div className="relative">
+                    <input
+                      ref={activityPdfInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      onChange={onActivityExamPdfUpload}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-10 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
+                    />
+                    {activityAttachmentName && (
+                      <button
+                        type="button"
+                        title="Remove file"
+                        aria-label="Remove file"
+                        onClick={() => {
+                          onRemoveActivityExamPdf()
+                          if (activityPdfInputRef.current) {
+                            activityPdfInputRef.current.value = ''
+                          }
+                        }}
+                        className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
+                      >
+                        <XIcon />
+                      </button>
+                    )}
+                  </div>
+                </Field>
+                {hasAttachment && (
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowUploadDetails((prev) => !prev)}
+                      className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                    >
+                      <span>{showUploadDetails ? 'Hide details' : 'Show details'}</span>
+                      <span className={`transition ${showUploadDetails ? 'rotate-180' : ''}`}>⌄</span>
+                    </button>
+                    {showUploadDetails && (
+                      <div className="space-y-3">
+                        <Field label="Total Items">
+                          <TextInput
+                            type="number"
+                            min={1}
+                            max={200}
+                            value={scan.examForm?.total_items || ''}
+                            onChange={(e) => scan.onTotalItemsChange(e.target.value)}
+                            placeholder="Leave blank when no template is needed"
+                          />
+                        </Field>
+                        <Field label="Answer Key">
+                          <TextareaInput
+                            ref={scan.answerKeyRef}
+                            value={scan.answerKeyDisplay || ''}
+                            onChange={() => {}}
+                            onKeyDown={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyKeyDown}
+                            onPaste={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyPaste}
+                            className="h-28 font-mono text-sm leading-6"
+                            placeholder="1. A"
+                            readOnly={isUploadedAnswerKeyLocked}
+                          />
+                          {isUploadedAnswerKeyLocked && (
+                            <p className="text-[11px] text-slate-400">Imported from upload (view only).</p>
+                          )}
+                        </Field>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <Field label="Activity Title" hint={shouldAutoTitle ? 'auto from file' : undefined}>
+            <TextInput
+              required
+              value={activityForm.title}
               onChange={(e) => setActivityForm((p) => ({ ...p, title: e.target.value }))}
-              placeholder="e.g. Midterm Examination" />
+              placeholder="e.g. Midterm Examination"
+              readOnly={shouldAutoTitle}
+            />
           </Field>
           <Field label="Type">
             <SelectInput value={activityForm.activity_type}
@@ -873,24 +935,13 @@ function ActivitiesTab({
               <option value="activity">Activity</option>
             </SelectInput>
           </Field>
-          <Field label="Exam Template" hint="optional">
-            <BoundedSelect
-              value={activityForm.exam_id}
-              onChange={(nextValue) => setActivityForm((p) => ({ ...p, exam_id: nextValue }))}
-              placeholder="No linked template"
-              options={examTemplates.map((exam) => ({
-                value: exam.id,
-                label: `${exam.title} (${exam.total_items} items)`,
-              }))}
-            />
-          </Field>
-          <Field label="Max Score">
-            <TextInput type="number" min={1} value={activityForm.max_score}
-              onChange={(e) => setActivityForm((p) => ({ ...p, max_score: e.target.value }))} />
-          </Field>
           <Field label="Due Date" hint="optional">
-            <TextInput type="datetime-local" value={activityForm.due_at}
-              onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))} />
+            <TextInput
+              type="datetime-local"
+              step={60}
+              value={activityForm.due_at}
+              onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))}
+            />
           </Field>
           <Field label="Status">
             <SelectInput value={activityForm.publish_status}
@@ -942,7 +993,6 @@ function ActivitiesTab({
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
                 <span>{item.submission_count || 0} submissions</span>
-                {item.exam_id && <span>{item.exam_title ? `Template: ${item.exam_title}` : `Template #${item.exam_id}`}</span>}
                 {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
                 {item.max_score && <span>{item.max_score} pts</span>}
               </div>
@@ -1058,9 +1108,16 @@ function AnnouncementsTab({
 /* ═══════════════════════════════════════════════════════
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
-function ScanCenterTab({ scan, templates = [] }) {
+function ScanCenterTab({ scan, templates = [], students = [] }) {
   const [actionMode, setActionMode] = useState('scan')
+  const [selectedStudentCode, setSelectedStudentCode] = useState('')
   const scannerConnected = Boolean(scan.scanner?.scanner?.connected)
+
+  // Build student options for the dropdown
+  const studentOptions = students.map((s) => ({
+    value: s.student_code,
+    label: `${s.student_code} — ${s.surname}${s.given_name ? ', ' + s.given_name : ''}`,
+  }))
 
   return (
     <div className="min-h-[520px] p-6">
@@ -1070,22 +1127,11 @@ function ScanCenterTab({ scan, templates = [] }) {
         </div>
       )}
 
-      <div className={`mb-6 rounded-2xl border px-4 py-4 shadow-sm ${scannerConnected ? 'border-emerald-200 bg-emerald-50' : 'border-amber-300 bg-amber-50'}`}>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className={`h-3 w-3 rounded-full ${scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
-          <p className={`text-sm font-bold ${scannerConnected ? 'text-emerald-800' : 'text-amber-800'}`}>
-            {scannerConnected ? 'Scanner ready' : 'Scanner not connected'}
-          </p>
-          <span className="rounded-full border border-white/60 bg-white/70 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
-            Transport: {scan.scanner?.transport || 'n/a'}
-          </span>
-        </div>
-        
-      </div>
-
       <div className="grid gap-6">
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
-          <div className="mb-4 flex items-center justify-between gap-3">
+
+          {/* ── Section header with INLINE scanner status (banner removed) ── */}
+          <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2.5">
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
                 <ScanIcon />
@@ -1095,30 +1141,65 @@ function ScanCenterTab({ scan, templates = [] }) {
                 <p className="text-xs text-slate-500">Templates are managed in Activities.</p>
               </div>
             </div>
-            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-              <button
-                type="button"
-                onClick={() => setActionMode('scan')}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${actionMode === 'scan' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Inline scanner status pill */}
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                  scannerConnected
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-amber-200 bg-amber-50 text-amber-700'
+                }`}
               >
-                Scanner Controls
-              </button>
-              <button
-                type="button"
-                onClick={() => setActionMode('manual')}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${actionMode === 'manual' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                Manual Submission
-              </button>
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
+                  }`}
+                />
+                {scannerConnected ? 'Scanner ready' : 'Not connected'}
+                <span className="ml-1 rounded-full border border-white/70 bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                  {scan.scanner?.transport || 'n/a'}
+                </span>
+              </span>
+
+              {/* Mode toggle */}
+              <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+                <button
+                  type="button"
+                  onClick={() => setActionMode('scan')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    actionMode === 'scan'
+                      ? 'bg-white text-slate-800 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Scanner Controls
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActionMode('manual')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    actionMode === 'manual'
+                      ? 'bg-white text-slate-800 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Manual Submission
+                </button>
+              </div>
             </div>
           </div>
 
+          {/* ── Scanner Controls mode ── */}
           {actionMode === 'scan' ? (
             <form onSubmit={scan.onScan} className="space-y-4">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs font-semibold text-slate-600">Recommended workflow</p>
-                <p className="mt-1 text-xs text-slate-500">Select a template, load paper, then run scan job.</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Select a template and student, load paper, then run scan job.
+                </p>
               </div>
+
               <Field label="Exam Template">
                 <BoundedSelect
                   value={scan.scanRequest?.exam_id || ''}
@@ -1127,23 +1208,53 @@ function ScanCenterTab({ scan, templates = [] }) {
                   options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
                 />
               </Field>
+
+              {/* Student selector — from enrolled roster */}
+              <Field label="Student" hint="optional — leave blank for batch scan">
+                <BoundedSelect
+                  value={selectedStudentCode}
+                  onChange={setSelectedStudentCode}
+                  placeholder={
+                    students.length === 0
+                      ? 'No students enrolled'
+                      : 'All enrolled students (batch)'
+                  }
+                  options={studentOptions}
+                />
+                {students.length > 0 && (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    {students.length} student{students.length !== 1 ? 's' : ''} on the class roster
+                  </p>
+                )}
+              </Field>
+
               <button
                 type="submit"
                 disabled={scan.busy || !scan.scanRequest?.exam_id || !scannerConnected}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {scan.busy ? <><SpinIcon /> Running scan...</> : <><ScanIcon /> Start Scan Job</>}
+                {scan.busy ? (
+                  <><SpinIcon /> Running scan...</>
+                ) : (
+                  <><ScanIcon /> Start Scan Job</>
+                )}
               </button>
+
               {!scannerConnected && (
                 <p className="text-xs text-amber-700">Scanner is required for this action.</p>
               )}
             </form>
+
           ) : (
+            /* ── Manual Submission mode ── */
             <form onSubmit={scan.onGrade} className="space-y-3">
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-xs font-semibold text-emerald-700">Fallback workflow</p>
-                <p className="mt-1 text-xs text-emerald-700/80">Use this when scanner is unavailable or for corrections.</p>
+                <p className="mt-1 text-xs text-emerald-700/80">
+                  Use this when scanner is unavailable or for corrections.
+                </p>
               </div>
+
               <Field label="Exam Template">
                 <BoundedSelect
                   value={scan.gradeForm?.exam_id || ''}
@@ -1152,14 +1263,30 @@ function ScanCenterTab({ scan, templates = [] }) {
                   options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
                 />
               </Field>
-              <Field label="Student Code">
-                <TextInput
-                  required
-                  value={scan.gradeForm?.student_code || ''}
-                  onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))}
-                  placeholder="2021-00001"
-                />
+
+              {/* Student: dropdown from roster if enrolled, otherwise free-text */}
+              <Field label="Student">
+                {students.length > 0 ? (
+                  <BoundedSelect
+                    value={scan.gradeForm?.student_code || ''}
+                    onChange={(nextValue) =>
+                      scan.setGradeForm((p) => ({ ...p, student_code: nextValue }))
+                    }
+                    placeholder="Select student from roster"
+                    options={studentOptions}
+                  />
+                ) : (
+                  <TextInput
+                    required
+                    value={scan.gradeForm?.student_code || ''}
+                    onChange={(e) =>
+                      scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))
+                    }
+                    placeholder="2021-00001"
+                  />
+                )}
               </Field>
+
               <Field label="Answers">
                 <TextareaInput
                   required
@@ -1172,7 +1299,11 @@ function ScanCenterTab({ scan, templates = [] }) {
                   placeholder="A"
                 />
               </Field>
-              <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">
+
+              <SubmitBtn
+                disabled={scan.busy || !scan.gradeForm?.exam_id}
+                colorClass="bg-emerald-600 hover:bg-emerald-700"
+              >
                 {scan.busy ? <><SpinIcon /> Grading...</> : 'Grade Submission'}
               </SubmitBtn>
             </form>
@@ -1180,27 +1311,22 @@ function ScanCenterTab({ scan, templates = [] }) {
         </section>
       </div>
 
-      {(scan.latestExam || scan.lastResult) && (
-        <div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2">
-          {scan.latestExam && (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Latest Template</p>
-              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.latestExam.title}</p>
-              <p className="mt-0.5 text-xs text-slate-500">{scan.latestExam.total_items} items</p>
-            </div>
-          )}
-          {scan.lastResult && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
-              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.lastResult.student_code} - {scan.lastResult.score}/{scan.lastResult.total_items}</p>
-              <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
-            </div>
-          )}
+      {/* Last result only — Latest Template card removed */}
+      {scan.lastResult && (
+        <div className="mt-6 border-t border-slate-100 pt-5">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
+            <p className="mt-1.5 text-sm font-bold text-slate-800">
+              {scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
+          </div>
         </div>
       )}
     </div>
   )
 }
+
 function GradebookTab({ gradebook, atRiskStudents }) {
   return (
     <div className="min-h-[520px] p-6">
@@ -1444,6 +1570,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [editingStudentId, setEditingStudentId]   = useState('')
   const [editStudentForm, setEditStudentForm]     = useState(emptyStudentForm)
   const [activityForm, setActivityForm]           = useState(emptyActivityForm)
+  const [activityAttachmentName, setActivityAttachmentName] = useState('')
   const [announcementForm, setAnnouncementForm]   = useState(emptyAnnouncementForm)
   const [editingActivityId, setEditingActivityId] = useState('')
   const [editingAnnouncementId, setEditingAnnouncementId] = useState('')
@@ -1527,6 +1654,28 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
   }, [selectedSubjectId])
+
+  useEffect(() => {
+    if (!activityAttachmentName || editingActivityId) return
+    const titleFromFile = filenameToTitle(activityAttachmentName)
+    const totalItems = Number(scan?.examForm?.total_items || 0)
+    const uploadAnswers = parseAnswerGridDisplay(scan?.answerKeyDisplay || '')
+    const normalizedUploadKey = uploadAnswers.join('|')
+    const matched = (scan.exams || []).find((exam) => {
+      const examTotal = Number(exam?.total_items || 0)
+      if (totalItems > 0 && examTotal !== totalItems) return false
+      if (normalizedUploadKey) {
+        return normalizeStoredAnswerKey(exam.answer_key) === normalizedUploadKey
+      }
+      return titleFromFile && String(exam.title || '').trim().toLowerCase() === titleFromFile.toLowerCase()
+    })
+    const nextExamId = matched ? String(matched.id) : ''
+    setActivityForm((prev) => {
+      const nextTitle = titleFromFile || prev.title
+      if (prev.exam_id === nextExamId && prev.title === nextTitle) return prev
+      return { ...prev, title: nextTitle, exam_id: nextExamId }
+    })
+  }, [activityAttachmentName, editingActivityId, scan.exams, scan.examForm?.total_items, scan.answerKeyDisplay])
 
   async function onCreateSubject(e) {
     e.preventDefault()
@@ -1617,6 +1766,42 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setEditStudentForm(emptyStudentForm)
   }
 
+  function resetActivityTemplateDraft() {
+    setActivityAttachmentName('')
+    if (scan?.onClearExamDraft) {
+      scan.onClearExamDraft()
+      return
+    }
+    if (scan?.setExamForm) {
+      scan.setExamForm({ title: '', total_items: '', answer_key: '' })
+      if (scan?.onTotalItemsChange) {
+        scan.onTotalItemsChange('')
+      }
+    }
+  }
+
+  async function onActivityExamPdfUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) {
+      setActivityAttachmentName('')
+      setActivityForm((p) => ({ ...p, exam_id: '' }))
+      return
+    }
+    setActivityAttachmentName(file.name)
+    const titleFromFile = filenameToTitle(file.name)
+    if (titleFromFile) {
+      setActivityForm((p) => ({ ...p, title: titleFromFile, exam_id: '' }))
+    }
+    if (scan?.onExamPdfUpload) {
+      await scan.onExamPdfUpload(e)
+    }
+  }
+
+  function onRemoveActivityExamPdf() {
+    setActivityForm((p) => ({ ...p, exam_id: '' }))
+    resetActivityTemplateDraft()
+  }
+
   async function onEditStudent(e, id) {
     if (e) e.preventDefault()
     if (!selectedSubjectId) return
@@ -1649,13 +1834,56 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     e.preventDefault()
     if (!selectedSubjectId) return
     setBusyAction('activity')
+    setError('')
     try {
+      const selectedTemplate = (scan.exams || []).find((exam) => String(exam.id) === String(activityForm.exam_id))
+      let examId = activityForm.exam_id ? Number(activityForm.exam_id) : null
+      let totalItems = Number(selectedTemplate?.total_items || 0)
+
+      if (!examId) {
+        const draftTotalItems = Number(scan?.examForm?.total_items || 0)
+        const draftAnswers = parseAnswerGridDisplay(scan?.answerKeyDisplay || '')
+        if (draftTotalItems > 0 || draftAnswers.length > 0) {
+          if (draftTotalItems < 1) {
+            throw new Error('Total items must be at least 1 when creating a template.')
+          }
+          if (draftAnswers.length !== draftTotalItems) {
+            throw new Error('Answer key must contain exactly one entry per item.')
+          }
+          if (draftAnswers.some((token) => !isValidAnswerToken(token))) {
+            throw new Error('Invalid answer key format. Use A or A/B per item.')
+          }
+
+          const resolvedTitle = filenameToTitle(activityAttachmentName) || activityForm.title.trim()
+          if (!resolvedTitle) {
+            throw new Error('Activity title is required.')
+          }
+          const createdExam = await apiPost('/exams', {
+            title: resolvedTitle,
+            total_items: draftTotalItems,
+            answer_key: draftAnswers.join('\n'),
+          })
+          examId = Number(createdExam?.data?.id || 0) || null
+          totalItems = draftTotalItems
+          if (scan?.onRefreshExams) {
+            await scan.onRefreshExams()
+          }
+        }
+      }
+
+      const resolvedTitle = (filenameToTitle(activityAttachmentName) || activityForm.title || '').trim()
+      if (!resolvedTitle) {
+        throw new Error('Activity title is required.')
+      }
+
       await apiPost(withEducator(`/lms/subjects/${selectedSubjectId}/activities`), {
         ...activityForm,
-        exam_id: activityForm.exam_id ? Number(activityForm.exam_id) : null,
-        max_score: Number(activityForm.max_score || 100),
+        title: resolvedTitle,
+        exam_id: examId,
+        max_score: Number(totalItems || activityForm.max_score || 100),
       })
       setActivityForm(emptyActivityForm)
+      resetActivityTemplateDraft()
       await refreshSubjectAndHomepage(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -1670,22 +1898,27 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
       due_at: activity.due_at ? String(activity.due_at).slice(0, 16) : '',
       publish_status: activity.publish_status || 'draft',
     })
+    resetActivityTemplateDraft()
   }
 
   function onCancelEditActivity() {
     setEditingActivityId('')
     setActivityForm(emptyActivityForm)
+    resetActivityTemplateDraft()
   }
 
   async function onEditActivity(e) {
     if (e) e.preventDefault()
     if (!selectedSubjectId || !editingActivityId) return
     setBusyAction(`edit-activity-${editingActivityId}`)
+    setError('')
     try {
+      const selectedTemplate = (scan.exams || []).find((exam) => String(exam.id) === String(activityForm.exam_id))
+      const totalItems = Number(selectedTemplate?.total_items || activityForm.max_score || 100)
       await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${editingActivityId}`), {
         ...activityForm,
         exam_id: activityForm.exam_id ? Number(activityForm.exam_id) : null,
-        max_score: Number(activityForm.max_score || 100),
+        max_score: totalItems,
       })
       onCancelEditActivity()
       await refreshSubjectAndHomepage(selectedSubjectId)
@@ -1950,7 +2183,10 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
               <ActivitiesTab
                 activities={activities} activityForm={activityForm} setActivityForm={setActivityForm}
                 scan={scan}
+                activityAttachmentName={activityAttachmentName}
                 busyAction={busyAction} editingActivityId={editingActivityId}
+                onActivityExamPdfUpload={onActivityExamPdfUpload}
+                onRemoveActivityExamPdf={onRemoveActivityExamPdf}
                 onCreateActivity={onCreateActivity}
                 onStartEditActivity={onStartEditActivity}
                 onCancelEditActivity={onCancelEditActivity}
