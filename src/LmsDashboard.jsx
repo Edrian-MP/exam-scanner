@@ -350,7 +350,7 @@ function RosterTab({
       </div>
 
       {/* RIGHT: list */}
-      <div className="flex flex-col gap-4 p-6">
+      <div className="flex flex-col gap-4 p-6 xl:h-0 xl:min-h-full xl:overflow-hidden">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-slate-800">Enrolled Students</h3>
           <span className="text-xs text-slate-400">
@@ -358,7 +358,7 @@ function RosterTab({
           </span>
         </div>
 
-        <div className="max-h-[384px] overflow-y-auto space-y-2 pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1">
           {students.length ? students.map((s) => (
             <div key={s.id}
               className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
@@ -432,7 +432,18 @@ function RosterTab({
 /* ═══════════════════════════════════════════════════════
    ACTIVITIES TAB
 ═══════════════════════════════════════════════════════ */
-function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, onCreateActivity }) {
+function ActivitiesTab({
+  activities,
+  activityForm,
+  setActivityForm,
+  busyAction,
+  editingActivityId,
+  onCreateActivity,
+  onStartEditActivity,
+  onCancelEditActivity,
+  onEditActivity,
+  onDeleteActivity,
+}) {
   const a = TAB_META.activities.accent
   return (
     <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
@@ -440,11 +451,13 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
       {/* LEFT: form */}
       <div className="flex flex-col gap-5 p-6">
         <div>
-          <h3 className="text-base font-bold text-slate-800">New Activity</h3>
-          <p className="mt-0.5 text-xs text-slate-500">Create exams, quizzes, or graded activities.</p>
+          <h3 className="text-base font-bold text-slate-800">{editingActivityId ? 'Edit Activity' : 'New Activity'}</h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {editingActivityId ? 'Update this activity details.' : 'Create exams, quizzes, or graded activities.'}
+          </p>
         </div>
 
-        <form onSubmit={onCreateActivity} className="flex flex-1 flex-col gap-4">
+        <form onSubmit={editingActivityId ? onEditActivity : onCreateActivity} className="flex flex-1 flex-col gap-4">
           <Field label="Activity Title">
             <TextInput required value={activityForm.title}
               onChange={(e) => setActivityForm((p) => ({ ...p, title: e.target.value }))}
@@ -480,15 +493,22 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
             </SelectInput>
           </Field>
           <div className="mt-auto pt-2">
-            <SubmitBtn disabled={busyAction === 'activity'} colorClass={a.btn}>
-              {busyAction === 'activity' ? <><SpinIcon /> Saving…</> : 'Create Activity'}
+            <SubmitBtn disabled={busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`} colorClass={a.btn}>
+              {busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`
+                ? <><SpinIcon /> Saving…</>
+                : (editingActivityId ? 'Save Activity' : 'Create Activity')}
             </SubmitBtn>
+            {editingActivityId && (
+              <GhostBtn type="button" onClick={onCancelEditActivity} className="mt-2 w-full justify-center" disabled={busyAction === `edit-activity-${editingActivityId}`}>
+                <XIcon /> Cancel
+              </GhostBtn>
+            )}
           </div>
         </form>
       </div>
 
       {/* RIGHT: list */}
-      <div className="flex flex-col gap-4 p-6">
+      <div className="flex flex-col gap-4 p-6 xl:h-0 xl:min-h-full xl:overflow-hidden">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-slate-800">Posted Activities</h3>
           <span className="text-xs text-slate-400">
@@ -496,7 +516,7 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
           </span>
         </div>
 
-        <div className="max-h-[528px] overflow-y-auto space-y-2.5 pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto space-y-2.5 pr-1">
           {activities.length ? activities.map((item) => (
             <div key={item.id}
               className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
@@ -518,6 +538,16 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
                 {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
                 {item.max_score && <span>{item.max_score} pts</span>}
               </div>
+              <div className="mt-3 flex justify-end gap-2">
+                <GhostBtn type="button" onClick={() => onStartEditActivity(item)} disabled={busyAction === `edit-activity-${item.id}`}>
+                  <PenIcon />
+                  Edit
+                </GhostBtn>
+                <DangerBtn type="button" onClick={() => onDeleteActivity(item.id)} disabled={busyAction === `delete-activity-${item.id}`}>
+                  {busyAction === `delete-activity-${item.id}` ? <SpinIcon /> : <TrashIcon />}
+                  Delete
+                </DangerBtn>
+              </div>
             </div>
           )) : (
             <EmptyState icon={<ClipboardIcon size="lg" />} title="No activities posted yet" description="Create your first exam, quiz, or activity." />
@@ -531,19 +561,32 @@ function ActivitiesTab({ activities, activityForm, setActivityForm, busyAction, 
 /* ═══════════════════════════════════════════════════════
    ANNOUNCEMENTS TAB
 ═══════════════════════════════════════════════════════ */
-function AnnouncementsTab({ announcements, announcementForm, setAnnouncementForm, busyAction, onPostAnnouncement }) {
+function AnnouncementsTab({
+  announcements,
+  announcementForm,
+  setAnnouncementForm,
+  busyAction,
+  editingAnnouncementId,
+  onPostAnnouncement,
+  onStartEditAnnouncement,
+  onCancelEditAnnouncement,
+  onEditAnnouncement,
+  onDeleteAnnouncement,
+}) {
   const a = TAB_META.announcements.accent
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
+    <div className="grid min-h-[520px] divide-y divide-slate-100 xl:h-[520px] xl:max-h-[520px] xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
 
       {/* LEFT: form */}
       <div className="flex flex-col gap-5 p-6">
         <div>
-          <h3 className="text-base font-bold text-slate-800">Post Announcement</h3>
-          <p className="mt-0.5 text-xs text-slate-500">Broadcast updates, reminders, or notes to your class.</p>
+          <h3 className="text-base font-bold text-slate-800">{editingAnnouncementId ? 'Edit Announcement' : 'Post Announcement'}</h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {editingAnnouncementId ? 'Update your announcement and save changes.' : 'Broadcast updates, reminders, or notes to your class.'}
+          </p>
         </div>
 
-        <form onSubmit={onPostAnnouncement} className="flex flex-1 flex-col gap-4">
+        <form onSubmit={editingAnnouncementId ? onEditAnnouncement : onPostAnnouncement} className="flex flex-1 flex-col gap-4">
           <Field label="Subject Line">
             <TextInput required value={announcementForm.title}
               onChange={(e) => setAnnouncementForm((p) => ({ ...p, title: e.target.value }))}
@@ -555,26 +598,43 @@ function AnnouncementsTab({ announcements, announcementForm, setAnnouncementForm
               placeholder="Write your announcement here…" />
           </Field>
           <div className="mt-auto pt-2">
-            <SubmitBtn disabled={busyAction === 'announcement'} colorClass={a.btn}>
-              {busyAction === 'announcement' ? <><SpinIcon /> Posting…</> : 'Post Announcement'}
+            <SubmitBtn disabled={busyAction === 'announcement' || busyAction === `edit-announcement-${editingAnnouncementId}`} colorClass={a.btn}>
+              {busyAction === 'announcement' || busyAction === `edit-announcement-${editingAnnouncementId}`
+                ? <><SpinIcon /> Saving…</>
+                : (editingAnnouncementId ? 'Save Announcement' : 'Post Announcement')}
             </SubmitBtn>
+            {editingAnnouncementId && (
+              <GhostBtn type="button" onClick={onCancelEditAnnouncement} className="mt-2 w-full justify-center" disabled={busyAction === `edit-announcement-${editingAnnouncementId}`}>
+                <XIcon /> Cancel
+              </GhostBtn>
+            )}
           </div>
         </form>
       </div>
 
       {/* RIGHT: list */}
-      <div className="flex flex-col gap-4 p-6">
+      <div className="flex min-h-0 flex-col gap-4 p-6">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-slate-800">Recent Announcements</h3>
           <span className="text-xs text-slate-400">{announcements.length} posted</span>
         </div>
 
-        <div className="max-h-[352px] overflow-y-auto space-y-3 pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto space-y-3 pr-1">
           {announcements.length ? announcements.map((item) => (
             <div key={item.id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm">
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-semibold text-slate-800">{item.title}</p>
-                <span className="flex-shrink-0 text-[11px] text-slate-400">{relativeTime(item.created_at)}</span>
+                <div className="flex flex-shrink-0 items-center gap-2">
+                  <span className="text-[11px] text-slate-400">{relativeTime(item.created_at)}</span>
+                  <GhostBtn type="button" onClick={() => onStartEditAnnouncement(item)} disabled={busyAction === `edit-announcement-${item.id}`}>
+                    <PenIcon />
+                    Edit
+                  </GhostBtn>
+                  <DangerBtn type="button" onClick={() => onDeleteAnnouncement(item.id)} disabled={busyAction === `delete-announcement-${item.id}`}>
+                    {busyAction === `delete-announcement-${item.id}` ? <SpinIcon /> : <TrashIcon />}
+                    Delete
+                  </DangerBtn>
+                </div>
               </div>
               {item.body && <p className="mt-2 text-xs text-slate-500 leading-relaxed line-clamp-3">{item.body}</p>}
             </div>
@@ -948,9 +1008,16 @@ function SubjectHomepage({ subjects, onSelect, showSubjectForm, setShowSubjectFo
 /* ═══════════════════════════════════════════════════════
    MAIN DASHBOARD
 ═══════════════════════════════════════════════════════ */
-export default function LmsDashboard({ scanCenter = null }) {
+export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const scan          = scanCenter || {}
   const hasScanCenter = Boolean(scan.onCreateExam && scan.onScan && scan.onGrade)
+  const educatorId = Number(educator?.id || 0)
+
+  function withEducator(path) {
+    if (!educatorId) return path
+    const joiner = path.includes('?') ? '&' : '?'
+    return `${path}${joiner}educator_id=${encodeURIComponent(String(educatorId))}`
+  }
 
   const [subjects, setSubjects]                   = useState([])
   const [selectedSubjectId, setSelectedSubjectId] = useState('')
@@ -964,11 +1031,15 @@ export default function LmsDashboard({ scanCenter = null }) {
   const [subjectsPanelOpen, setSubjectsPanelOpen] = useState(false)
   const [showSubjectForm, setShowSubjectForm]     = useState(false)
   const [subjectForm, setSubjectForm]             = useState(emptySubjectForm)
+  const [subjectTileEditing, setSubjectTileEditing] = useState(false)
+  const [editSubjectForm, setEditSubjectForm]     = useState(emptySubjectForm)
   const [studentForm, setStudentForm]             = useState(emptyStudentForm)
   const [editingStudentId, setEditingStudentId]   = useState('')
   const [editStudentForm, setEditStudentForm]     = useState(emptyStudentForm)
   const [activityForm, setActivityForm]           = useState(emptyActivityForm)
   const [announcementForm, setAnnouncementForm]   = useState(emptyAnnouncementForm)
+  const [editingActivityId, setEditingActivityId] = useState('')
+  const [editingAnnouncementId, setEditingAnnouncementId] = useState('')
   const [activeTab, setActiveTab]                 = useState('roster')
 
   const selectedSubject     = useMemo(() => subjects.find((s) => String(s.id) === String(selectedSubjectId)), [subjects, selectedSubjectId])
@@ -995,17 +1066,17 @@ export default function LmsDashboard({ scanCenter = null }) {
   }), [students, activities, announcements, scan.exams, gradebook])
 
   async function loadSubjects() {
-    const res = await apiGet('/lms/subjects')
+    const res = await apiGet(withEducator('/lms/subjects'))
     setSubjects(res.data || [])
   }
 
   async function loadSubjectDetails(id) {
     if (!id) return
     const [sR, aR, anR, gR] = await Promise.all([
-      apiGet(`/lms/subjects/${id}/students`),
-      apiGet(`/lms/subjects/${id}/activities`),
-      apiGet(`/lms/subjects/${id}/announcements`),
-      apiGet(`/lms/subjects/${id}/gradebook`),
+      apiGet(withEducator(`/lms/subjects/${id}/students`)),
+      apiGet(withEducator(`/lms/subjects/${id}/activities`)),
+      apiGet(withEducator(`/lms/subjects/${id}/announcements`)),
+      apiGet(withEducator(`/lms/subjects/${id}/gradebook`)),
     ])
     setStudents(sR.data || [])
     setActivities(aR.data || [])
@@ -1013,14 +1084,26 @@ export default function LmsDashboard({ scanCenter = null }) {
     setGradebook(gR.data || [])
   }
 
+  async function refreshSubjectAndHomepage(id) {
+    if (!id) return
+    await Promise.all([
+      loadSubjectDetails(id),
+      loadSubjects(),
+    ])
+  }
+
   useEffect(() => {
+    if (!educatorId) return
     setLoading(true)
     loadSubjects().catch((e) => setError(e.message)).finally(() => setLoading(false))
-  }, [])
+  }, [educatorId])
 
   useEffect(() => {
     if (!selectedSubjectId) return
+    onCancelEditSubject()
     onCancelEditStudent()
+    onCancelEditActivity()
+    onCancelEditAnnouncement()
     setLoading(true)
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
@@ -1031,7 +1114,7 @@ export default function LmsDashboard({ scanCenter = null }) {
     setBusyAction('subject')
     setError('')
     try {
-      await apiPost('/lms/subjects', subjectForm)
+      await apiPost(withEducator('/lms/subjects'), { ...subjectForm, educator_id: educatorId })
       setSubjectForm(emptySubjectForm)
       setShowSubjectForm(false)
       await loadSubjects()
@@ -1043,9 +1126,41 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!window.confirm(`Delete "${selectedSubject.subject_code}"? This removes the list and activities.`)) return
     setBusyAction('delete-subject')
     try {
-      await apiDelete(`/lms/subjects/${selectedSubject.id}`)
+      await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
       setSelectedSubjectId('')
       setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([])
+      await loadSubjects()
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onStartEditSubject() {
+    if (!selectedSubject) return
+    setEditSubjectForm({
+      subject_code: selectedSubject.subject_code || '',
+      title: selectedSubject.title || '',
+      term_label: selectedSubject.term_label || '',
+      description: selectedSubject.description || '',
+    })
+    setSubjectTileEditing(true)
+  }
+
+  function onCancelEditSubject() {
+    setSubjectTileEditing(false)
+    setEditSubjectForm(emptySubjectForm)
+  }
+
+  async function onEditSubject(e) {
+    if (e) e.preventDefault()
+    if (!selectedSubject) return
+    setBusyAction(`edit-subject-${selectedSubject.id}`)
+    setError('')
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubject.id}`), {
+        subject_code: editSubjectForm.subject_code.trim(),
+        title: editSubjectForm.title.trim(),
+        term_label: editSubjectForm.term_label.trim(),
+      })
+      onCancelEditSubject()
       await loadSubjects()
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -1055,7 +1170,7 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!selectedSubjectId) return
     setBusyAction('student')
     try {
-      await apiPost(`/lms/subjects/${selectedSubjectId}/students`, {
+      await apiPost(withEducator(`/lms/subjects/${selectedSubjectId}/students`), {
         student_code: studentForm.student_code.trim(),
         surname: studentForm.surname.trim(),
         given_name: studentForm.given_name.trim(),
@@ -1063,7 +1178,7 @@ export default function LmsDashboard({ scanCenter = null }) {
         email: studentForm.email.trim(),
       })
       setStudentForm(emptyStudentForm)
-      await loadSubjectDetails(selectedSubjectId)
+      await refreshSubjectAndHomepage(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
@@ -1088,7 +1203,7 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!selectedSubjectId) return
     setBusyAction(`edit-student-${id}`)
     try {
-      await apiPut(`/lms/subjects/${selectedSubjectId}/students/${id}`, {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/students/${id}`), {
         student_code: editStudentForm.student_code.trim(),
         surname: editStudentForm.surname.trim(),
         given_name: editStudentForm.given_name.trim(),
@@ -1096,18 +1211,18 @@ export default function LmsDashboard({ scanCenter = null }) {
         email: editStudentForm.email.trim(),
       })
       onCancelEditStudent()
-      await loadSubjectDetails(selectedSubjectId)
+      await refreshSubjectAndHomepage(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
   async function onRemoveStudent(id) {
     setBusyAction(`remove-student-${id}`)
     try {
-      await apiDelete(`/lms/subjects/${selectedSubjectId}/students/${id}`)
+      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/students/${id}`))
       if (String(editingStudentId) === String(id)) {
         onCancelEditStudent()
       }
-      await loadSubjectDetails(selectedSubjectId)
+      await refreshSubjectAndHomepage(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
@@ -1116,13 +1231,58 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!selectedSubjectId) return
     setBusyAction('activity')
     try {
-      await apiPost(`/lms/subjects/${selectedSubjectId}/activities`, {
+      await apiPost(withEducator(`/lms/subjects/${selectedSubjectId}/activities`), {
         ...activityForm,
         exam_id: activityForm.exam_id ? Number(activityForm.exam_id) : null,
         max_score: Number(activityForm.max_score || 100),
       })
       setActivityForm(emptyActivityForm)
-      await loadSubjectDetails(selectedSubjectId)
+      await refreshSubjectAndHomepage(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onStartEditActivity(activity) {
+    setEditingActivityId(String(activity.id))
+    setActivityForm({
+      title: activity.title || '',
+      activity_type: activity.activity_type || 'exam',
+      exam_id: activity.exam_id ? String(activity.exam_id) : '',
+      max_score: activity.max_score || 100,
+      due_at: activity.due_at ? String(activity.due_at).slice(0, 16) : '',
+      publish_status: activity.publish_status || 'draft',
+    })
+  }
+
+  function onCancelEditActivity() {
+    setEditingActivityId('')
+    setActivityForm(emptyActivityForm)
+  }
+
+  async function onEditActivity(e) {
+    if (e) e.preventDefault()
+    if (!selectedSubjectId || !editingActivityId) return
+    setBusyAction(`edit-activity-${editingActivityId}`)
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${editingActivityId}`), {
+        ...activityForm,
+        exam_id: activityForm.exam_id ? Number(activityForm.exam_id) : null,
+        max_score: Number(activityForm.max_score || 100),
+      })
+      onCancelEditActivity()
+      await refreshSubjectAndHomepage(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  async function onDeleteActivity(id) {
+    if (!selectedSubjectId) return
+    if (!window.confirm('Delete this activity?')) return
+    setBusyAction(`delete-activity-${id}`)
+    try {
+      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${id}`))
+      if (String(editingActivityId) === String(id)) {
+        onCancelEditActivity()
+      }
+      await refreshSubjectAndHomepage(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
@@ -1131,8 +1291,45 @@ export default function LmsDashboard({ scanCenter = null }) {
     if (!selectedSubjectId) return
     setBusyAction('announcement')
     try {
-      await apiPost(`/lms/subjects/${selectedSubjectId}/announcements`, announcementForm)
+      await apiPost(withEducator(`/lms/subjects/${selectedSubjectId}/announcements`), announcementForm)
       setAnnouncementForm(emptyAnnouncementForm)
+      await loadSubjectDetails(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onStartEditAnnouncement(announcement) {
+    setEditingAnnouncementId(String(announcement.id))
+    setAnnouncementForm({
+      title: announcement.title || '',
+      body: announcement.body || '',
+    })
+  }
+
+  function onCancelEditAnnouncement() {
+    setEditingAnnouncementId('')
+    setAnnouncementForm(emptyAnnouncementForm)
+  }
+
+  async function onEditAnnouncement(e) {
+    if (e) e.preventDefault()
+    if (!selectedSubjectId || !editingAnnouncementId) return
+    setBusyAction(`edit-announcement-${editingAnnouncementId}`)
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${editingAnnouncementId}`), announcementForm)
+      onCancelEditAnnouncement()
+      await loadSubjectDetails(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  async function onDeleteAnnouncement(id) {
+    if (!selectedSubjectId) return
+    if (!window.confirm('Delete this announcement?')) return
+    setBusyAction(`delete-announcement-${id}`)
+    try {
+      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${id}`))
+      if (String(editingAnnouncementId) === String(id)) {
+        onCancelEditAnnouncement()
+      }
       await loadSubjectDetails(selectedSubjectId)
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -1176,56 +1373,91 @@ export default function LmsDashboard({ scanCenter = null }) {
       )}
 
       {/* SUBJECT BAR */}
-      <section className="mt-5 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={() => {
-            if (selectedSubject) {
-              setSelectedSubjectId('')
-              setSubjectsPanelOpen(false)
-              setActiveTab('roster')
-              onCancelEditStudent()
-            } else {
-              setSubjectsPanelOpen((v) => !v)
-            }
-          }}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
-        >
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            {selectedSubject ? (
-              <>
+      {(selectedSubject || loading) && (
+        <section className="mt-5 flex flex-wrap items-center gap-3">
+          {selectedSubject && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedSubjectId('')
+                setSubjectsPanelOpen(false)
+                setActiveTab('roster')
+                onCancelEditStudent()
+              }}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:shadow"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="19" y1="12" x2="5" y2="12" />
                 <polyline points="12 19 5 12 12 5" />
-              </>
+              </svg>
+              Back to Subjects
+            </button>
+          )}
+
+          {selectedSubject && (
+            subjectTileEditing ? (
+              <form onSubmit={onEditSubject} className="flex flex-wrap items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-3 py-2">
+                <input
+                  value={editSubjectForm.subject_code}
+                  onChange={(e) => setEditSubjectForm((p) => ({ ...p, subject_code: e.target.value }))}
+                  placeholder="Subject Code"
+                  className="w-28 rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-bold uppercase tracking-wide text-brand-700 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                  required
+                />
+                <input
+                  value={editSubjectForm.title}
+                  onChange={(e) => setEditSubjectForm((p) => ({ ...p, title: e.target.value }))}
+                  placeholder="Subject Title"
+                  className="min-w-[220px] flex-1 rounded-lg border border-brand-200 bg-white px-3 py-1.5 text-sm font-semibold text-brand-800 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                  required
+                />
+                <input
+                  value={editSubjectForm.term_label}
+                  onChange={(e) => setEditSubjectForm((p) => ({ ...p, term_label: e.target.value }))}
+                  placeholder="Section"
+                  className="w-28 rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-700 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                />
+                <button
+                  type="submit"
+                  disabled={busyAction === `edit-subject-${selectedSubject.id}`}
+                  className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {busyAction === `edit-subject-${selectedSubject.id}` ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelEditSubject}
+                  disabled={busyAction === `edit-subject-${selectedSubject.id}`}
+                  className="inline-flex items-center rounded-lg border border-brand-200 bg-white px-3 py-1.5 text-xs font-semibold text-brand-700 transition hover:bg-brand-100 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </form>
             ) : (
-              <>
-                <line x1="3" y1="12" x2="21" y2="12" />
-                <line x1="3" y1="6" x2="21" y2="6" />
-                <line x1="3" y1="18" x2="21" y2="18" />
-              </>
-            )}
-          </svg>
-          {selectedSubject ? 'Back to Subjects' : (subjectsPanelOpen ? 'Close Subjects' : 'Switch Subject')}
-        </button>
+              <button
+                type="button"
+                onClick={onStartEditSubject}
+                onDoubleClick={onStartEditSubject}
+                className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-left transition hover:bg-brand-100"
+                title="Click to edit subject details"
+              >
+                <span className="text-xs font-bold uppercase tracking-widest text-brand-500">{selectedSubject.subject_code}</span>
+                <span className="h-3.5 w-px bg-brand-200" />
+                <span className="text-sm font-semibold text-brand-800">{selectedSubject.title}</span>
+                {selectedSubject.term_label && (
+                  <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-600">{selectedSubject.term_label}</span>
+                )}
+              </button>
+            )
+          )}
 
-        {selectedSubject && (
-          <div className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5">
-            <span className="text-xs font-bold uppercase tracking-widest text-brand-500">{selectedSubject.subject_code}</span>
-            <span className="h-3.5 w-px bg-brand-200" />
-            <span className="text-sm font-semibold text-brand-800">{selectedSubject.title}</span>
-            {selectedSubject.term_label && (
-              <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-600">{selectedSubject.term_label}</span>
-            )}
-          </div>
-        ) 
-      }
-
-        {loading && (
-          <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-400">
-            <SpinIcon /> Loading…
-          </span>
-        )}
-      </section>
+          {loading && (
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-400">
+              <SpinIcon /> Loading…
+            </span>
+          )}
+        </section>
+      )}
 
       {/* SUBJECTS PANEL */}
       {subjectsPanelOpen && (
@@ -1318,14 +1550,24 @@ export default function LmsDashboard({ scanCenter = null }) {
             {activeTab === 'activities' && (
               <ActivitiesTab
                 activities={activities} activityForm={activityForm} setActivityForm={setActivityForm}
-                busyAction={busyAction} onCreateActivity={onCreateActivity}
+                busyAction={busyAction} editingActivityId={editingActivityId}
+                onCreateActivity={onCreateActivity}
+                onStartEditActivity={onStartEditActivity}
+                onCancelEditActivity={onCancelEditActivity}
+                onEditActivity={onEditActivity}
+                onDeleteActivity={onDeleteActivity}
               />
             )}
             {activeTab === 'announcements' && (
               <AnnouncementsTab
                 announcements={announcements} announcementForm={announcementForm}
                 setAnnouncementForm={setAnnouncementForm} busyAction={busyAction}
+                editingAnnouncementId={editingAnnouncementId}
                 onPostAnnouncement={onPostAnnouncement}
+                onStartEditAnnouncement={onStartEditAnnouncement}
+                onCancelEditAnnouncement={onCancelEditAnnouncement}
+                onEditAnnouncement={onEditAnnouncement}
+                onDeleteAnnouncement={onDeleteAnnouncement}
               />
             )}
             {activeTab === 'scan' && hasScanCenter && (

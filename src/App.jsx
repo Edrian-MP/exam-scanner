@@ -480,6 +480,7 @@ function App() {
         </div>
       </div>
       <LmsDashboard
+        educator={educator}
         scanCenter={{
           apiBase: API_BASE,
           health,

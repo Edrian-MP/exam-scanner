@@ -50,12 +50,17 @@ CREATE TABLE IF NOT EXISTS educators (
 
 CREATE TABLE IF NOT EXISTS subjects (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  educator_id INT NOT NULL,
   subject_code VARCHAR(40) NOT NULL,
   title VARCHAR(160) NOT NULL,
   term_label VARCHAR(80) NULL,
   description TEXT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_subject_code (subject_code)
+  INDEX idx_subjects_educator_id (educator_id),
+  UNIQUE KEY uq_subject_code_per_educator (educator_id, subject_code),
+  CONSTRAINT fk_subjects_educator FOREIGN KEY (educator_id) REFERENCES educators(id)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS students (

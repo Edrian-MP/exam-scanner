@@ -125,14 +125,57 @@ function ensure_lms_schema(): void
         db()->exec(
             "CREATE TABLE IF NOT EXISTS subjects (
                 id INT AUTO_INCREMENT PRIMARY KEY,
+                educator_id INT NOT NULL,
                 subject_code VARCHAR(40) NOT NULL,
                 title VARCHAR(160) NOT NULL,
                 term_label VARCHAR(80) NULL,
                 description TEXT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_subject_code (subject_code)
+                INDEX idx_subjects_educator_id (educator_id),
+                UNIQUE KEY uq_subject_code_per_educator (educator_id, subject_code),
+                CONSTRAINT fk_subjects_educator FOREIGN KEY (educator_id) REFERENCES educators(id)
+                    ON DELETE CASCADE
+                    ON UPDATE CASCADE
             )"
         );
+        $subjectEducatorExists = db()->query("SHOW COLUMNS FROM subjects LIKE 'educator_id'")->fetch();
+        if (!$subjectEducatorExists) {
+            db()->exec("ALTER TABLE subjects ADD COLUMN educator_id INT NULL AFTER id");
+        }
+        $defaultEducatorIdRow = db()->query('SELECT MIN(id) AS id FROM educators')->fetch();
+        $defaultEducatorId = (int) ($defaultEducatorIdRow['id'] ?? 0);
+        if ($defaultEducatorId < 1) {
+            $defaultEducatorId = 1;
+        }
+        $backfillStmt = db()->prepare('UPDATE subjects SET educator_id = :educator_id WHERE educator_id IS NULL');
+        $backfillStmt->execute([':educator_id' => $defaultEducatorId]);
+        db()->exec('ALTER TABLE subjects MODIFY COLUMN educator_id INT NOT NULL');
+        $legacySubjectCodeIndex = db()->query("SHOW INDEX FROM subjects WHERE Key_name = 'uq_subject_code'")->fetch();
+        if ($legacySubjectCodeIndex) {
+            db()->exec('ALTER TABLE subjects DROP INDEX uq_subject_code');
+        }
+        $scopedSubjectCodeIndex = db()->query("SHOW INDEX FROM subjects WHERE Key_name = 'uq_subject_code_per_educator'")->fetch();
+        if (!$scopedSubjectCodeIndex) {
+            db()->exec('ALTER TABLE subjects ADD UNIQUE KEY uq_subject_code_per_educator (educator_id, subject_code)');
+        }
+        $subjectsEducatorFk = db()->query(
+            "SELECT CONSTRAINT_NAME
+             FROM information_schema.KEY_COLUMN_USAGE
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'subjects'
+               AND COLUMN_NAME = 'educator_id'
+               AND REFERENCED_TABLE_NAME = 'educators'
+             LIMIT 1"
+        )->fetch();
+        if (!$subjectsEducatorFk) {
+            db()->exec(
+                'ALTER TABLE subjects
+                 ADD CONSTRAINT fk_subjects_educator
+                 FOREIGN KEY (educator_id) REFERENCES educators(id)
+                 ON DELETE CASCADE
+                 ON UPDATE CASCADE'
+            );
+        }
         db()->exec(
             "CREATE TABLE IF NOT EXISTS students (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -287,10 +330,39 @@ function map_educator_public(array $row): array
     ];
 }
 
-function find_subject_or_404(int $subjectId): array
+function require_lms_educator_id(): int
 {
-    $stmt = db()->prepare('SELECT id, subject_code, title, term_label, description, created_at FROM subjects WHERE id = :id LIMIT 1');
-    $stmt->execute([':id' => $subjectId]);
+    $educatorId = (int) ($_GET['educator_id'] ?? 0);
+    if ($educatorId < 1) {
+        json_response(400, ['ok' => false, 'error' => 'educator_id is required']);
+    }
+
+    $stmt = db()->prepare(
+        'SELECT id
+         FROM educators
+         WHERE id = :id AND is_active = 1
+         LIMIT 1'
+    );
+    $stmt->execute([':id' => $educatorId]);
+    if (!$stmt->fetch()) {
+        json_response(404, ['ok' => false, 'error' => 'Educator not found']);
+    }
+
+    return $educatorId;
+}
+
+function find_subject_or_404(int $subjectId, int $educatorId): array
+{
+    $stmt = db()->prepare(
+        'SELECT id, educator_id, subject_code, title, term_label, description, created_at
+         FROM subjects
+         WHERE id = :id AND educator_id = :educator_id
+         LIMIT 1'
+    );
+    $stmt->execute([
+        ':id' => $subjectId,
+        ':educator_id' => $educatorId,
+    ]);
     $subject = $stmt->fetch();
     if (!$subject) {
         json_response(404, ['ok' => false, 'error' => 'Subject not found']);
@@ -299,8 +371,8 @@ function find_subject_or_404(int $subjectId): array
 }
 
 ensure_submissions_exam_title_column();
-ensure_lms_schema();
 ensure_educators_schema();
+ensure_lms_schema();
 
 if ($path === '/auth/account' && $method === 'GET') {
     $educatorId = (int) ($_GET['educator_id'] ?? 0);
@@ -692,7 +764,8 @@ if ($path === '/grade/submit') {
 }
 
 if ($path === '/lms/subjects' && $method === 'GET') {
-    $rows = db()->query(
+    $educatorId = require_lms_educator_id();
+    $stmt = db()->prepare(
         'SELECT s.id, s.subject_code, s.title, s.term_label, s.description, s.created_at,
                 COUNT(DISTINCT ss.student_id) AS student_count,
                 COUNT(DISTINCT a.id) AS activity_count,
@@ -700,14 +773,22 @@ if ($path === '/lms/subjects' && $method === 'GET') {
          FROM subjects s
          LEFT JOIN subject_students ss ON ss.subject_id = s.id
          LEFT JOIN subject_activities a ON a.subject_id = s.id
+         WHERE s.educator_id = :educator_id
          GROUP BY s.id, s.subject_code, s.title, s.term_label, s.description, s.created_at
          ORDER BY s.created_at DESC'
-    )->fetchAll();
+    );
+    $stmt->execute([':educator_id' => $educatorId]);
+    $rows = $stmt->fetchAll();
     json_response(200, ['ok' => true, 'data' => $rows]);
 }
 
 if ($path === '/lms/subjects' && $method === 'POST') {
+    $educatorId = require_lms_educator_id();
     $payload = request_json();
+    $payloadEducatorId = (int) ($payload['educator_id'] ?? 0);
+    if ($payloadEducatorId > 0 && $payloadEducatorId !== $educatorId) {
+        json_response(400, ['ok' => false, 'error' => 'educator_id mismatch']);
+    }
     $code = strtoupper(trim((string) ($payload['subject_code'] ?? '')));
     $title = trim((string) ($payload['title'] ?? ''));
     $term = trim((string) ($payload['term_label'] ?? ''));
@@ -718,28 +799,64 @@ if ($path === '/lms/subjects' && $method === 'POST') {
     }
 
     $stmt = db()->prepare(
-        'INSERT INTO subjects (subject_code, title, term_label, description)
-         VALUES (:subject_code, :title, :term_label, :description)'
+        'INSERT INTO subjects (educator_id, subject_code, title, term_label, description)
+         VALUES (:educator_id, :subject_code, :title, :term_label, :description)'
     );
     try {
         $stmt->execute([
+            ':educator_id' => $educatorId,
             ':subject_code' => $code,
             ':title' => $title,
             ':term_label' => $term !== '' ? $term : null,
             ':description' => $description !== '' ? $description : null,
         ]);
     } catch (Throwable $e) {
-        json_response(409, ['ok' => false, 'error' => 'Subject code already exists']);
+        json_response(409, ['ok' => false, 'error' => 'Subject code already exists for this educator']);
     }
 
     json_response(201, ['ok' => true, 'data' => ['id' => (int) db()->lastInsertId()]]);
 }
 
 if (preg_match('#^/lms/subjects/(\d+)$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
+    if ($method === 'PUT') {
+        find_subject_or_404($subjectId, $educatorId);
+        $payload = request_json();
+        $code = strtoupper(trim((string) ($payload['subject_code'] ?? '')));
+        $title = trim((string) ($payload['title'] ?? ''));
+        $term = trim((string) ($payload['term_label'] ?? ''));
+        if ($code === '' || $title === '') {
+            json_response(400, ['ok' => false, 'error' => 'subject_code and title are required']);
+        }
+
+        $stmt = db()->prepare(
+            'UPDATE subjects
+             SET subject_code = :subject_code,
+                 title = :title,
+                 term_label = :term_label
+             WHERE id = :id AND educator_id = :educator_id'
+        );
+        try {
+            $stmt->execute([
+                ':subject_code' => $code,
+                ':title' => $title,
+                ':term_label' => $term !== '' ? $term : null,
+                ':id' => $subjectId,
+                ':educator_id' => $educatorId,
+            ]);
+        } catch (Throwable $e) {
+            json_response(409, ['ok' => false, 'error' => 'Subject code already exists for this educator']);
+        }
+
+        json_response(200, ['ok' => true]);
+    }
     if ($method === 'DELETE') {
-        $stmt = db()->prepare('DELETE FROM subjects WHERE id = :id');
-        $stmt->execute([':id' => $subjectId]);
+        $stmt = db()->prepare('DELETE FROM subjects WHERE id = :id AND educator_id = :educator_id');
+        $stmt->execute([
+            ':id' => $subjectId,
+            ':educator_id' => $educatorId,
+        ]);
         if ($stmt->rowCount() < 1) {
             json_response(404, ['ok' => false, 'error' => 'Subject not found']);
         }
@@ -748,8 +865,9 @@ if (preg_match('#^/lms/subjects/(\d+)$#', $path, $matches)) {
 }
 
 if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
-    find_subject_or_404($subjectId);
+    find_subject_or_404($subjectId, $educatorId);
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
@@ -825,9 +943,10 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
 }
 
 if (preg_match('#^/lms/subjects/(\d+)/students/(\d+)$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
     $studentId = (int) $matches[2];
-    find_subject_or_404($subjectId);
+    find_subject_or_404($subjectId, $educatorId);
 
     if ($method === 'PUT') {
         $belongsStmt = db()->prepare(
@@ -890,8 +1009,9 @@ if (preg_match('#^/lms/subjects/(\d+)/students/(\d+)$#', $path, $matches)) {
 }
 
 if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
-    find_subject_or_404($subjectId);
+    find_subject_or_404($subjectId, $educatorId);
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
@@ -964,9 +1084,104 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
     }
 }
 
-if (preg_match('#^/lms/subjects/(\d+)/announcements$#', $path, $matches)) {
+if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
-    find_subject_or_404($subjectId);
+    $activityId = (int) $matches[2];
+    find_subject_or_404($subjectId, $educatorId);
+
+    if ($method === 'PUT') {
+        $exists = db()->prepare(
+            'SELECT id
+             FROM subject_activities
+             WHERE id = :id AND subject_id = :subject_id
+             LIMIT 1'
+        );
+        $exists->execute([
+            ':id' => $activityId,
+            ':subject_id' => $subjectId,
+        ]);
+        if (!$exists->fetch()) {
+            json_response(404, ['ok' => false, 'error' => 'Activity not found']);
+        }
+
+        $payload = request_json();
+        $title = trim((string) ($payload['title'] ?? ''));
+        $activityType = strtolower(trim((string) ($payload['activity_type'] ?? 'exam')));
+        $publishStatus = strtolower(trim((string) ($payload['publish_status'] ?? 'draft')));
+        $examId = (int) ($payload['exam_id'] ?? 0);
+        $maxScore = (int) ($payload['max_score'] ?? 100);
+        $dueAt = trim((string) ($payload['due_at'] ?? ''));
+
+        if ($title === '') {
+            json_response(400, ['ok' => false, 'error' => 'title is required']);
+        }
+
+        $validTypes = ['exam', 'quiz', 'activity'];
+        if (!in_array($activityType, $validTypes, true)) {
+            $activityType = 'activity';
+        }
+
+        $validStatuses = ['draft', 'published', 'closed'];
+        if (!in_array($publishStatus, $validStatuses, true)) {
+            $publishStatus = 'draft';
+        }
+
+        if ($maxScore < 1) {
+            $maxScore = 100;
+        }
+
+        if ($examId > 0) {
+            $examStmt = db()->prepare('SELECT id FROM exams WHERE id = :id LIMIT 1');
+            $examStmt->execute([':id' => $examId]);
+            if (!$examStmt->fetch()) {
+                json_response(404, ['ok' => false, 'error' => 'Linked exam not found']);
+            }
+        } else {
+            $examId = null;
+        }
+
+        $update = db()->prepare(
+            'UPDATE subject_activities
+             SET title = :title,
+                 activity_type = :activity_type,
+                 exam_id = :exam_id,
+                 max_score = :max_score,
+                 due_at = :due_at,
+                 publish_status = :publish_status
+             WHERE id = :id AND subject_id = :subject_id'
+        );
+        $update->execute([
+            ':id' => $activityId,
+            ':subject_id' => $subjectId,
+            ':title' => $title,
+            ':activity_type' => $activityType,
+            ':exam_id' => $examId,
+            ':max_score' => $maxScore,
+            ':due_at' => $dueAt !== '' ? $dueAt : null,
+            ':publish_status' => $publishStatus,
+        ]);
+
+        json_response(200, ['ok' => true]);
+    }
+
+    if ($method === 'DELETE') {
+        $delete = db()->prepare(
+            'DELETE FROM subject_activities
+             WHERE id = :id AND subject_id = :subject_id'
+        );
+        $delete->execute([
+            ':id' => $activityId,
+            ':subject_id' => $subjectId,
+        ]);
+        json_response(200, ['ok' => true]);
+    }
+}
+
+if (preg_match('#^/lms/subjects/(\d+)/announcements$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
+    $subjectId = (int) $matches[1];
+    find_subject_or_404($subjectId, $educatorId);
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
@@ -1003,9 +1218,68 @@ if (preg_match('#^/lms/subjects/(\d+)/announcements$#', $path, $matches)) {
     }
 }
 
-if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method === 'GET') {
+if (preg_match('#^/lms/subjects/(\d+)/announcements/(\d+)$#', $path, $matches)) {
+    $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
-    find_subject_or_404($subjectId);
+    $announcementId = (int) $matches[2];
+    find_subject_or_404($subjectId, $educatorId);
+
+    if ($method === 'PUT') {
+        $exists = db()->prepare(
+            'SELECT id
+             FROM subject_announcements
+             WHERE id = :id AND subject_id = :subject_id
+             LIMIT 1'
+        );
+        $exists->execute([
+            ':id' => $announcementId,
+            ':subject_id' => $subjectId,
+        ]);
+        if (!$exists->fetch()) {
+            json_response(404, ['ok' => false, 'error' => 'Announcement not found']);
+        }
+
+        $payload = request_json();
+        $title = trim((string) ($payload['title'] ?? ''));
+        $body = trim((string) ($payload['body'] ?? ''));
+
+        if ($title === '' || $body === '') {
+            json_response(400, ['ok' => false, 'error' => 'title and body are required']);
+        }
+
+        $update = db()->prepare(
+            'UPDATE subject_announcements
+             SET title = :title,
+                 body = :body
+             WHERE id = :id AND subject_id = :subject_id'
+        );
+        $update->execute([
+            ':id' => $announcementId,
+            ':subject_id' => $subjectId,
+            ':title' => $title,
+            ':body' => $body,
+        ]);
+
+        json_response(200, ['ok' => true]);
+    }
+
+    if ($method === 'DELETE') {
+        $delete = db()->prepare(
+            'DELETE FROM subject_announcements
+             WHERE id = :id AND subject_id = :subject_id'
+        );
+        $delete->execute([
+            ':id' => $announcementId,
+            ':subject_id' => $subjectId,
+        ]);
+        json_response(200, ['ok' => true]);
+    }
+}
+
+if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method === 'GET') {
+    $educatorId = require_lms_educator_id();
+    $subjectId = (int) $matches[1];
+    find_subject_or_404($subjectId, $educatorId);
 
     $stmt = db()->prepare(
         'SELECT st.id AS student_id,
