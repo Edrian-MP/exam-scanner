@@ -277,6 +277,74 @@ function SelectInput({ children, className = '', ...props }) {
   )
 }
 
+function BoundedSelect({ value, onChange, options, placeholder = 'Select option', className = '' }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    function onDocClick(event) {
+      if (!wrapRef.current?.contains(event.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [])
+
+  const selected = options.find((opt) => String(opt.value) === String(value))
+
+  return (
+    <div ref={wrapRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left text-sm text-slate-800 shadow-sm outline-none transition-all duration-150 hover:border-slate-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+      >
+        <span className={selected ? 'truncate text-slate-800' : 'truncate text-slate-400'}>
+          {selected ? selected.label : placeholder}
+        </span>
+        <svg className="h-4 w-4 flex-shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+          <div className="max-h-56 overflow-y-auto py-1">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('')
+                setOpen(false)
+              }}
+              className={`block w-full px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${value ? 'text-slate-500' : 'bg-slate-50 text-slate-700'}`}
+            >
+              {placeholder}
+            </button>
+            {options.map((opt) => {
+              const active = String(opt.value) === String(value)
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(String(opt.value))
+                    setOpen(false)
+                  }}
+                  className={`block w-full truncate px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${active ? 'bg-slate-100 font-semibold text-slate-800' : 'text-slate-700'}`}
+                  title={opt.label}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TextareaInput({ className = '', ...props }) {
   return (
     <textarea
@@ -714,6 +782,7 @@ function ActivitiesTab({
   activities,
   activityForm,
   setActivityForm,
+  scan,
   busyAction,
   editingActivityId,
   onCreateActivity,
@@ -723,6 +792,7 @@ function ActivitiesTab({
   onDeleteActivity,
 }) {
   const a = TAB_META.activities.accent
+  const examTemplates = scan?.exams || []
   return (
     <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
 
@@ -734,6 +804,60 @@ function ActivitiesTab({
             {editingActivityId ? 'Update this activity details.' : 'Create exams, quizzes, or graded activities.'}
           </p>
         </div>
+
+        {scan?.onCreateExam && (
+          <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
+            <div className="mb-3">
+              <h4 className="text-sm font-bold text-slate-800">Create Exam Template</h4>
+              <p className="mt-0.5 text-xs text-slate-500">Build answer keys here, then link the template to your activity below.</p>
+            </div>
+            <form onSubmit={scan.onCreateExam} className="space-y-3">
+              <Field label="Upload PDF" hint="optional">
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={scan.onExamPdfUpload}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
+                />
+                {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
+              </Field>
+              <Field label="Template Title">
+                <TextInput
+                  required
+                  value={scan.examForm?.title || ''}
+                  onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))}
+                  placeholder="Midterm Exam - CS101"
+                />
+              </Field>
+              <Field label="Total Items">
+                <TextInput
+                  required
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={scan.examForm?.total_items || ''}
+                  onChange={(e) => scan.onTotalItemsChange(e.target.value)}
+                  placeholder="50"
+                />
+              </Field>
+              <Field label="Answer Key">
+                <TextareaInput
+                  required
+                  ref={scan.answerKeyRef}
+                  value={scan.answerKeyDisplay || ''}
+                  onChange={() => {}}
+                  onKeyDown={scan.onAnswerKeyKeyDown}
+                  onPaste={scan.onAnswerKeyPaste}
+                  className="h-28 font-mono text-sm leading-6"
+                  placeholder="A"
+                />
+              </Field>
+              <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">
+                {scan.busy ? <><SpinIcon /> Saving...</> : 'Save Template'}
+              </SubmitBtn>
+            </form>
+          </div>
+        )}
 
         <form onSubmit={editingActivityId ? onEditActivity : onCreateActivity} className="flex flex-1 flex-col gap-4">
           <Field label="Activity Title">
@@ -749,10 +873,16 @@ function ActivitiesTab({
               <option value="activity">Activity</option>
             </SelectInput>
           </Field>
-          <Field label="Linked Exam ID" hint="optional">
-            <TextInput type="number" value={activityForm.exam_id}
-              onChange={(e) => setActivityForm((p) => ({ ...p, exam_id: e.target.value }))}
-              placeholder="Leave blank if none" />
+          <Field label="Exam Template" hint="optional">
+            <BoundedSelect
+              value={activityForm.exam_id}
+              onChange={(nextValue) => setActivityForm((p) => ({ ...p, exam_id: nextValue }))}
+              placeholder="No linked template"
+              options={examTemplates.map((exam) => ({
+                value: exam.id,
+                label: `${exam.title} (${exam.total_items} items)`,
+              }))}
+            />
           </Field>
           <Field label="Max Score">
             <TextInput type="number" min={1} value={activityForm.max_score}
@@ -797,7 +927,7 @@ function ActivitiesTab({
         <div className="min-h-0 flex-1 overflow-y-auto space-y-2.5 pr-1">
           {activities.length ? activities.map((item) => (
             <div key={item.id}
-              className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
+              className="rounded-xl border border-slate-100 bg-slate-50 p-2 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
             >
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-semibold text-slate-800 leading-snug">{item.title}</p>
@@ -810,13 +940,13 @@ function ActivitiesTab({
                   </Badge>
                 </div>
               </div>
-              <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
                 <span>{item.submission_count || 0} submissions</span>
-                {item.exam_id && <span>Exam #{item.exam_id}</span>}
+                {item.exam_id && <span>{item.exam_title ? `Template: ${item.exam_title}` : `Template #${item.exam_id}`}</span>}
                 {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
                 {item.max_score && <span>{item.max_score} pts</span>}
               </div>
-              <div className="mt-3 flex justify-end gap-2">
+              <div className="mt-2 flex justify-end gap-2">
                 <GhostBtn type="button" onClick={() => onStartEditActivity(item)} disabled={busyAction === `edit-activity-${item.id}`}>
                   <PenIcon />
                   Edit
@@ -928,7 +1058,7 @@ function AnnouncementsTab({
 /* ═══════════════════════════════════════════════════════
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
-function ScanCenterTab({ scan }) {
+function ScanCenterTab({ scan, templates = [] }) {
   const [actionMode, setActionMode] = useState('scan')
   const scannerConnected = Boolean(scan.scanner?.scanner?.connected)
 
@@ -953,73 +1083,7 @@ function ScanCenterTab({ scan }) {
         
       </div>
 
-      <div className="mb-4 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-2">
-        <div className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-brand-700">
-          <span className="font-bold">Step 1:</span> Setup exam template
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700">
-          <span className="font-bold">Step 2:</span> Scan or manual submit
-        </div>
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[minmax(320px,420px)_1fr]">
-        <section className="rounded-2xl border border-brand-200 bg-brand-50/40 p-5">
-          <div className="mb-4 flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
-              <DocIcon />
-            </span>
-            <div>
-              <h3 className="text-sm font-bold text-slate-800">Step 1: Create Exam Template</h3>
-              <p className="text-xs text-slate-500">Import from PDF or enter details manually.</p>
-            </div>
-          </div>
-          <form onSubmit={scan.onCreateExam} className="space-y-3">
-            <Field label="Upload PDF" hint="optional">
-              <input
-                type="file"
-                accept="application/pdf,.pdf"
-                onChange={scan.onExamPdfUpload}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
-              />
-              {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
-            </Field>
-            <Field label="Exam Title">
-              <TextInput
-                required
-                value={scan.examForm?.title || ''}
-                onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))}
-                placeholder="Midterm Exam - CS101"
-              />
-            </Field>
-            <Field label="Total Items">
-              <TextInput
-                required
-                type="number"
-                min={1}
-                max={200}
-                value={scan.examForm?.total_items || ''}
-                onChange={(e) => scan.onTotalItemsChange(e.target.value)}
-                placeholder="50"
-              />
-            </Field>
-            <Field label="Answer Key">
-              <TextareaInput
-                required
-                ref={scan.answerKeyRef}
-                value={scan.answerKeyDisplay || ''}
-                onChange={() => {}}
-                onKeyDown={scan.onAnswerKeyKeyDown}
-                onPaste={scan.onAnswerKeyPaste}
-                className="h-36 font-mono text-sm leading-6"
-                placeholder="A"
-              />
-            </Field>
-            <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">
-              {scan.busy ? <><SpinIcon /> Saving...</> : 'Save Exam Template'}
-            </SubmitBtn>
-          </form>
-        </section>
-
+      <div className="grid gap-6">
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -1027,8 +1091,8 @@ function ScanCenterTab({ scan }) {
                 <ScanIcon />
               </span>
               <div>
-                <h3 className="text-sm font-bold text-slate-800">Step 2: Scan or Submit</h3>
-                <p className="text-xs text-slate-500">Primary flow is scanner-first. Manual is fallback.</p>
+                <h3 className="text-sm font-bold text-slate-800">Scan or Submit</h3>
+                <p className="text-xs text-slate-500">Templates are managed in Activities.</p>
               </div>
             </div>
             <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
@@ -1056,14 +1120,12 @@ function ScanCenterTab({ scan }) {
                 <p className="mt-1 text-xs text-slate-500">Select a template, load paper, then run scan job.</p>
               </div>
               <Field label="Exam Template">
-                <SelectInput
-                  required
+                <BoundedSelect
                   value={scan.scanRequest?.exam_id || ''}
-                  onChange={(e) => scan.setScanRequest({ exam_id: e.target.value })}
-                >
-                  <option value="">Select exam template</option>
-                  {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-                </SelectInput>
+                  onChange={(nextValue) => scan.setScanRequest({ exam_id: nextValue })}
+                  placeholder="Select exam template"
+                  options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
+                />
               </Field>
               <button
                 type="submit"
@@ -1083,14 +1145,12 @@ function ScanCenterTab({ scan }) {
                 <p className="mt-1 text-xs text-emerald-700/80">Use this when scanner is unavailable or for corrections.</p>
               </div>
               <Field label="Exam Template">
-                <SelectInput
-                  required
+                <BoundedSelect
                   value={scan.gradeForm?.exam_id || ''}
-                  onChange={(e) => scan.setGradeForm((p) => ({ ...p, exam_id: e.target.value }))}
-                >
-                  <option value="">Select exam template</option>
-                  {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-                </SelectInput>
+                  onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, exam_id: nextValue }))}
+                  placeholder="Select exam template"
+                  options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
+                />
               </Field>
               <Field label="Student Code">
                 <TextInput
@@ -1391,6 +1451,18 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
 
   const selectedSubject     = useMemo(() => subjects.find((s) => String(s.id) === String(selectedSubjectId)), [subjects, selectedSubjectId])
   const publishedActivities = useMemo(() => activities.filter((a) => a.publish_status === 'published'), [activities])
+  const scanTemplates = useMemo(() => {
+    const allTemplates = scan.exams || []
+    if (!allTemplates.length) return []
+    const linkedIds = new Set(
+      activities
+        .map((activity) => activity.exam_id)
+        .filter(Boolean)
+        .map((id) => String(id))
+    )
+    const linkedTemplates = allTemplates.filter((exam) => linkedIds.has(String(exam.id)))
+    return linkedTemplates.length ? linkedTemplates : allTemplates
+  }, [activities, scan.exams])
   const atRiskStudents      = useMemo(() => gradebook.filter((r) => {
     const p = Number(r.published_activities || 0)
     return p > 0 && (Number(r.completed_activities || 0) < p || Number(r.average_percent || 0) < 75)
@@ -1408,9 +1480,9 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     roster:        students.length,
     activities:    activities.length,
     announcements: announcements.length,
-    scan:          scan.exams?.length || 0,
+    scan:          scanTemplates.length,
     gradebook:     gradebook.length,
-  }), [students, activities, announcements, scan.exams, gradebook])
+  }), [students, activities, announcements, scanTemplates.length, gradebook])
 
   async function loadSubjects() {
     const res = await apiGet(withEducator('/lms/subjects'))
@@ -1877,6 +1949,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
             {activeTab === 'activities' && (
               <ActivitiesTab
                 activities={activities} activityForm={activityForm} setActivityForm={setActivityForm}
+                scan={scan}
                 busyAction={busyAction} editingActivityId={editingActivityId}
                 onCreateActivity={onCreateActivity}
                 onStartEditActivity={onStartEditActivity}
@@ -1898,7 +1971,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
               />
             )}
             {activeTab === 'scan' && hasScanCenter && (
-              <ScanCenterTab scan={scan} />
+              <ScanCenterTab scan={scan} templates={scanTemplates} />
             )}
             {activeTab === 'gradebook' && (
               <GradebookTab gradebook={gradebook} atRiskStudents={atRiskStudents} />
