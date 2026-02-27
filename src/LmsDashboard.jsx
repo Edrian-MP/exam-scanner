@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import * as XLSX from 'xlsx'
 
@@ -929,6 +929,9 @@ function AnnouncementsTab({
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
 function ScanCenterTab({ scan }) {
+  const [actionMode, setActionMode] = useState('scan')
+  const scannerConnected = Boolean(scan.scanner?.scanner?.connected)
+
   return (
     <div className="min-h-[520px] p-6">
       {scan.error && (
@@ -937,24 +940,38 @@ function ScanCenterTab({ scan }) {
         </div>
       )}
 
-      {/* Scanner status bar */}
-      <div className="mb-6 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-        <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${scan.scanner?.scanner?.connected ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
-        <span className={`text-sm font-semibold ${scan.scanner?.scanner?.connected ? 'text-emerald-700' : 'text-amber-700'}`}>
-          {scan.scanner?.scanner?.connected ? 'Scanner Device Connected' : 'Waiting for scanner device…'}
-        </span>
-        <span className="ml-auto text-xs text-slate-400">{scan.scanner?.transport || 'n/a'}</span>
+      <div className={`mb-6 rounded-2xl border px-4 py-4 shadow-sm ${scannerConnected ? 'border-emerald-200 bg-emerald-50' : 'border-amber-300 bg-amber-50'}`}>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className={`h-3 w-3 rounded-full ${scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+          <p className={`text-sm font-bold ${scannerConnected ? 'text-emerald-800' : 'text-amber-800'}`}>
+            {scannerConnected ? 'Scanner ready' : 'Scanner not connected'}
+          </p>
+          <span className="rounded-full border border-white/60 bg-white/70 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+            Transport: {scan.scanner?.transport || 'n/a'}
+          </span>
+        </div>
+        
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-3">
+      <div className="mb-4 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-2">
+        <div className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-brand-700">
+          <span className="font-bold">Step 1:</span> Setup exam template
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-700">
+          <span className="font-bold">Step 2:</span> Scan or manual submit
+        </div>
+      </div>
 
-        {/* Create exam template */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
+      <div className="grid gap-6 xl:grid-cols-[minmax(320px,420px)_1fr]">
+        <section className="rounded-2xl border border-brand-200 bg-brand-50/40 p-5">
+          <div className="mb-4 flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
               <DocIcon />
             </span>
-            <h3 className="text-sm font-bold text-slate-800">Create Exam Template</h3>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Step 1: Create Exam Template</h3>
+              <p className="text-xs text-slate-500">Import from PDF or enter details manually.</p>
+            </div>
           </div>
           <form onSubmit={scan.onCreateExam} className="space-y-3">
             <Field label="Upload PDF" hint="optional">
@@ -967,10 +984,23 @@ function ScanCenterTab({ scan }) {
               {scan.pdfImportStatus && <p className="text-xs text-slate-500">{scan.pdfImportStatus}</p>}
             </Field>
             <Field label="Exam Title">
-              <TextInput required value={scan.examForm?.title || ''} onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))} placeholder="Midterm Exam — CS101" />
+              <TextInput
+                required
+                value={scan.examForm?.title || ''}
+                onChange={(e) => scan.setExamForm((p) => ({ ...p, title: e.target.value }))}
+                placeholder="Midterm Exam - CS101"
+              />
             </Field>
             <Field label="Total Items">
-              <TextInput required type="number" min={1} max={200} value={scan.examForm?.total_items || ''} onChange={(e) => scan.onTotalItemsChange(e.target.value)} placeholder="50" />
+              <TextInput
+                required
+                type="number"
+                min={1}
+                max={200}
+                value={scan.examForm?.total_items || ''}
+                onChange={(e) => scan.onTotalItemsChange(e.target.value)}
+                placeholder="50"
+              />
             </Field>
             <Field label="Answer Key">
               <TextareaInput
@@ -980,73 +1010,116 @@ function ScanCenterTab({ scan }) {
                 onChange={() => {}}
                 onKeyDown={scan.onAnswerKeyKeyDown}
                 onPaste={scan.onAnswerKeyPaste}
-                className="h-24 font-mono text-xs"
+                className="h-36 font-mono text-sm leading-6"
                 placeholder="A"
               />
             </Field>
-            <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">Save Exam</SubmitBtn>
-          </form>
-        </div>
-
-        {/* Scanner controls */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
-              <ScanIcon />
-            </span>
-            <h3 className="text-sm font-bold text-slate-800">Scanner Controls</h3>
-          </div>
-          <form onSubmit={scan.onScan} className="space-y-3">
-            <Field label="Exam Template">
-              <SelectInput required value={scan.scanRequest?.exam_id || ''} onChange={(e) => scan.setScanRequest({ exam_id: e.target.value })}>
-                <option value="">Select exam template</option>
-                {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-              </SelectInput>
-            </Field>
-            <SubmitBtn disabled={scan.busy || !scan.scanRequest?.exam_id} colorClass="bg-slate-800 hover:bg-slate-700">
-              Start Scan Job
+            <SubmitBtn disabled={scan.busy} colorClass="bg-brand-600 hover:bg-brand-700">
+              {scan.busy ? <><SpinIcon /> Saving...</> : 'Save Exam Template'}
             </SubmitBtn>
           </form>
-        </div>
+        </section>
 
-        {/* Manual submission */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-              <PenIcon />
-            </span>
-            <h3 className="text-sm font-bold text-slate-800">Manual Submission</h3>
+        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                <ScanIcon />
+              </span>
+              <div>
+                <h3 className="text-sm font-bold text-slate-800">Step 2: Scan or Submit</h3>
+                <p className="text-xs text-slate-500">Primary flow is scanner-first. Manual is fallback.</p>
+              </div>
+            </div>
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+              <button
+                type="button"
+                onClick={() => setActionMode('scan')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${actionMode === 'scan' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Scanner Controls
+              </button>
+              <button
+                type="button"
+                onClick={() => setActionMode('manual')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${actionMode === 'manual' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Manual Submission
+              </button>
+            </div>
           </div>
-          <form onSubmit={scan.onGrade} className="space-y-3">
-            <Field label="Exam Template">
-              <SelectInput required value={scan.gradeForm?.exam_id || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, exam_id: e.target.value }))}>
-                <option value="">Select exam template</option>
-                {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
-              </SelectInput>
-            </Field>
-            <Field label="Student Code">
-              <TextInput required value={scan.gradeForm?.student_code || ''} onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))} placeholder="2021-00001" />
-            </Field>
-            <Field label="Answers">
-              <TextareaInput
-                required
-                ref={scan.gradeAnswersRef}
-                value={scan.gradeAnswersDisplay || ''}
-                onChange={() => {}}
-                onKeyDown={scan.onGradeAnswersKeyDown}
-                onPaste={scan.onGradeAnswersPaste}
-                className="h-24 font-mono text-xs"
-                placeholder="A"
-              />
-            </Field>
-            <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">
-              Grade Submission
-            </SubmitBtn>
-          </form>
-        </div>
+
+          {actionMode === 'scan' ? (
+            <form onSubmit={scan.onScan} className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold text-slate-600">Recommended workflow</p>
+                <p className="mt-1 text-xs text-slate-500">Select a template, load paper, then run scan job.</p>
+              </div>
+              <Field label="Exam Template">
+                <SelectInput
+                  required
+                  value={scan.scanRequest?.exam_id || ''}
+                  onChange={(e) => scan.setScanRequest({ exam_id: e.target.value })}
+                >
+                  <option value="">Select exam template</option>
+                  {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
+                </SelectInput>
+              </Field>
+              <button
+                type="submit"
+                disabled={scan.busy || !scan.scanRequest?.exam_id || !scannerConnected}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {scan.busy ? <><SpinIcon /> Running scan...</> : <><ScanIcon /> Start Scan Job</>}
+              </button>
+              {!scannerConnected && (
+                <p className="text-xs text-amber-700">Scanner is required for this action.</p>
+              )}
+            </form>
+          ) : (
+            <form onSubmit={scan.onGrade} className="space-y-3">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-xs font-semibold text-emerald-700">Fallback workflow</p>
+                <p className="mt-1 text-xs text-emerald-700/80">Use this when scanner is unavailable or for corrections.</p>
+              </div>
+              <Field label="Exam Template">
+                <SelectInput
+                  required
+                  value={scan.gradeForm?.exam_id || ''}
+                  onChange={(e) => scan.setGradeForm((p) => ({ ...p, exam_id: e.target.value }))}
+                >
+                  <option value="">Select exam template</option>
+                  {(scan.exams || []).map((ex) => <option key={ex.id} value={ex.id}>{ex.title}</option>)}
+                </SelectInput>
+              </Field>
+              <Field label="Student Code">
+                <TextInput
+                  required
+                  value={scan.gradeForm?.student_code || ''}
+                  onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))}
+                  placeholder="2021-00001"
+                />
+              </Field>
+              <Field label="Answers">
+                <TextareaInput
+                  required
+                  ref={scan.gradeAnswersRef}
+                  value={scan.gradeAnswersDisplay || ''}
+                  onChange={() => {}}
+                  onKeyDown={scan.onGradeAnswersKeyDown}
+                  onPaste={scan.onGradeAnswersPaste}
+                  className="h-36 font-mono text-sm leading-6"
+                  placeholder="A"
+                />
+              </Field>
+              <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">
+                {scan.busy ? <><SpinIcon /> Grading...</> : 'Grade Submission'}
+              </SubmitBtn>
+            </form>
+          )}
+        </section>
       </div>
 
-      {/* Recent results */}
       {(scan.latestExam || scan.lastResult) && (
         <div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2">
           {scan.latestExam && (
@@ -1059,7 +1132,7 @@ function ScanCenterTab({ scan }) {
           {scan.lastResult && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
               <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
-              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}</p>
+              <p className="mt-1.5 text-sm font-bold text-slate-800">{scan.lastResult.student_code} - {scan.lastResult.score}/{scan.lastResult.total_items}</p>
               <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
             </div>
           )}
@@ -1068,10 +1141,6 @@ function ScanCenterTab({ scan }) {
     </div>
   )
 }
-
-/* ═══════════════════════════════════════════════════════
-   GRADEBOOK TAB
-═══════════════════════════════════════════════════════ */
 function GradebookTab({ gradebook, atRiskStudents }) {
   return (
     <div className="min-h-[520px] p-6">
@@ -1617,30 +1686,6 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     <main className="mx-auto max-w-7xl px-4 pt-3 pb-6 sm:px-6 lg:px-8">
 
       {/* HEADER */}
-      <section className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-panel backdrop-blur">
-        <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-sky-400 via-brand-500 to-violet-500" />
-
-        {/* Top row: title + status pills */}
-        <div className="flex items-center justify-between gap-4 px-5 py-3.5">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">Educator LMS</span>
-            </div>
-            <h1 className="text-lg font-bold tracking-tight text-slate-900">Classroom Command</h1>
-          </div>
-        </div>
-
-        {/* Stat strip */}
-        {selectedSubject && (
-          <div className="grid grid-cols-4 divide-x divide-slate-100 border-t border-slate-100">
-            <MiniStat icon={<UsersIcon size="md" />}     label="Students"   value={students.length}         sub="enrolled"                                                                        accent="sky"     />
-            <MiniStat icon={<ClipboardIcon size="md" />} label="Activities" value={activities.length}       sub={`${publishedActivities.length} published`}                                       accent="violet"  />
-            <MiniStat icon={<GradebookIcon size="md" />} label="Gradebook"  value={gradebook.length}        sub={atRiskStudents.length > 0 ? `${atRiskStudents.length} at-risk` : 'all on track'} accent={atRiskStudents.length > 0 ? 'amber' : 'emerald'} />
-            <MiniStat icon={<ScanIcon size="md" />}      label="Templates"  value={scan.exams?.length || 0} sub="exam templates"                                                                  accent="slate"   />
-          </div>
-        )}
-      </section>
 
       {/* ERROR */}
       {error && (
