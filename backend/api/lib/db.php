@@ -31,6 +31,7 @@ function db(): PDO
     $pdo = new PDO($dsn, $cfg['db_user'], $cfg['db_pass'], [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_TIMEOUT => (int) ($cfg['db_timeout'] ?? 3),
     ]);
 
     return $pdo;

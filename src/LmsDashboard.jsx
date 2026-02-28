@@ -1465,7 +1465,7 @@ function SubjectHomepage({ subjects, onSelect, showSubjectForm, setShowSubjectFo
 
           {/* Cards */}
           {subjects.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className="grid max-h-[calc(190px*2+1rem)] gap-4 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
               {subjects.map((s) => {
                 const published = Number(s.published_activity_count || 0)
                 const total     = Number(s.activity_count || 0)
@@ -1475,7 +1475,7 @@ function SubjectHomepage({ subjects, onSelect, showSubjectForm, setShowSubjectFo
                     key={s.id}
                     type="button"
                     onClick={() => onSelect(String(s.id))}
-                    className="group flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
+                    className="group flex min-h-[190px] flex-col rounded-xl border border-slate-200 bg-slate-50 p-5 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
                   >
                     {/* Code + term */}
                     <div className="flex items-start justify-between gap-2">
@@ -1563,6 +1563,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [busyAction, setBusyAction]               = useState('')
   const [subjectsPanelOpen, setSubjectsPanelOpen] = useState(false)
   const [showSubjectForm, setShowSubjectForm]     = useState(false)
+  const [subjectSort, setSubjectSort]             = useState('date_desc')
+  const [subjectSortMenuOpen, setSubjectSortMenuOpen] = useState(false)
   const [subjectForm, setSubjectForm]             = useState(emptySubjectForm)
   const [subjectTileEditing, setSubjectTileEditing] = useState(false)
   const [editSubjectForm, setEditSubjectForm]     = useState(emptySubjectForm)
@@ -1575,8 +1577,50 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [editingActivityId, setEditingActivityId] = useState('')
   const [editingAnnouncementId, setEditingAnnouncementId] = useState('')
   const [activeTab, setActiveTab]                 = useState('roster')
+  const subjectSortMenuRef                         = useRef(null)
 
   const selectedSubject     = useMemo(() => subjects.find((s) => String(s.id) === String(selectedSubjectId)), [subjects, selectedSubjectId])
+  const subjectSortOptions  = useMemo(() => ([
+    { value: 'date_desc', label: 'Date added (Newest first)' },
+    { value: 'date_asc',  label: 'Date added (Oldest first)' },
+    { value: 'alpha_asc', label: 'Alphabetical (A-Z)' },
+    { value: 'alpha_desc', label: 'Alphabetical (Z-A)' },
+  ]), [])
+  const subjectSortLabel = useMemo(
+    () => subjectSortOptions.find((opt) => opt.value === subjectSort)?.label || 'Date added (Newest first)',
+    [subjectSort, subjectSortOptions]
+  )
+  const sortedSubjects = useMemo(() => {
+    const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })
+    const normalized = subjects.map((s) => {
+      const rawTs = Date.parse(String(s.created_at || ''))
+      return {
+        subject: s,
+        createdTs: Number.isFinite(rawTs) ? rawTs : null,
+        alphaKey: String(s.title || s.subject_code || '').trim(),
+      }
+    })
+
+    normalized.sort((a, b) => {
+      if (subjectSort === 'date_asc' || subjectSort === 'date_desc') {
+        const dir = subjectSort === 'date_asc' ? 1 : -1
+        if (a.createdTs !== null && b.createdTs !== null && a.createdTs !== b.createdTs) {
+          return (a.createdTs - b.createdTs) * dir
+        }
+      } else {
+        const dir = subjectSort === 'alpha_desc' ? -1 : 1
+        const alphaDiff = collator.compare(a.alphaKey, b.alphaKey)
+        if (alphaDiff !== 0) return alphaDiff * dir
+      }
+
+      const fallbackDateA = a.createdTs ?? 0
+      const fallbackDateB = b.createdTs ?? 0
+      if (fallbackDateA !== fallbackDateB) return fallbackDateB - fallbackDateA
+      return collator.compare(String(a.subject.subject_code || ''), String(b.subject.subject_code || ''))
+    })
+
+    return normalized.map((entry) => entry.subject)
+  }, [subjectSort, subjects])
   const publishedActivities = useMemo(() => activities.filter((a) => a.publish_status === 'published'), [activities])
   const scanTemplates = useMemo(() => {
     const allTemplates = scan.exams || []
@@ -1654,6 +1698,18 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
   }, [selectedSubjectId])
+
+  useEffect(() => {
+    if (!subjectSortMenuOpen) return
+    const onDocPointerDown = (event) => {
+      if (!subjectSortMenuRef.current) return
+      if (!subjectSortMenuRef.current.contains(event.target)) {
+        setSubjectSortMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocPointerDown)
+    return () => document.removeEventListener('mousedown', onDocPointerDown)
+  }, [subjectSortMenuOpen])
 
   useEffect(() => {
     if (!activityAttachmentName || editingActivityId) return
@@ -2285,18 +2341,56 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <h2 className="text-sm font-bold text-slate-700">Your Subjects</h2>
-              {!showSubjectForm && (
-                <button
-                  type="button"
-                  onClick={() => setShowSubjectForm(true)}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
-                >
-                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                  </svg>
-                  New Subject
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                <div ref={subjectSortMenuRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setSubjectSortMenuOpen((prev) => !prev)}
+                    title={`Current: ${subjectSortLabel}`}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                  >
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5h18M6 12h12m-9 7.5h6" />
+                    </svg>
+                    <span className="hidden sm:inline">Filter</span>
+                    <span className="sm:hidden">Sort</span>
+                  </button>
+                  {subjectSortMenuOpen && (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
+                      {subjectSortOptions.map((opt) => {
+                        const selected = subjectSort === opt.value
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => {
+                              setSubjectSort(opt.value)
+                              setSubjectSortMenuOpen(false)
+                            }}
+                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition ${selected ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            <span>{opt.label}</span>
+                            {selected && <span className="text-[11px] font-semibold">Selected</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {!showSubjectForm && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSubjectForm(true)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                  >
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    New Subject
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="p-5 space-y-4">
@@ -2330,8 +2424,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
 
               {/* Cards */}
               {subjects.length > 0 ? (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {subjects.map((s) => {
+                <div className="grid max-h-[calc(190px*2+1rem)] gap-4 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
+                  {sortedSubjects.map((s) => {
                     const published = Number(s.published_activity_count || 0)
                     const total     = Number(s.activity_count || 0)
                     const pct       = total > 0 ? Math.round((published / total) * 100) : 0
@@ -2340,7 +2434,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                         key={s.id}
                         type="button"
                         onClick={() => setSelectedSubjectId(String(s.id))}
-                        className="group flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
+                        className="group flex min-h-[190px] flex-col rounded-xl border border-slate-200 bg-slate-50 p-5 text-left transition hover:border-brand-300 hover:bg-white hover:shadow-md"
                       >
                         {/* Code + term badge */}
                         <div className="flex items-start justify-between gap-2">
