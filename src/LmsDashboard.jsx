@@ -310,14 +310,25 @@ function SelectInput({ children, className = '', ...props }) {
   )
 }
 
-function BoundedSelect({ value, onChange, options, placeholder = 'Select option', className = '' }) {
+function BoundedSelect({
+  value,
+  onChange,
+  options,
+  placeholder = 'Select option',
+  className = '',
+  searchable = false,
+  searchPlaceholder = 'Search...',
+  emptySearchText = 'No matching options',
+}) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const wrapRef = useRef(null)
 
   useEffect(() => {
     function onDocClick(event) {
       if (!wrapRef.current?.contains(event.target)) {
         setOpen(false)
+        setQuery('')
       }
     }
     document.addEventListener('mousedown', onDocClick)
@@ -325,12 +336,21 @@ function BoundedSelect({ value, onChange, options, placeholder = 'Select option'
   }, [])
 
   const selected = options.find((opt) => String(opt.value) === String(value))
+  const queryNeedle = query.trim().toLowerCase()
+  const filteredOptions = queryNeedle
+    ? options.filter((opt) => String(opt.searchText || opt.label || '').toLowerCase().includes(queryNeedle))
+    : options
 
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={() => {
+          setOpen((prev) => {
+            if (prev) setQuery('')
+            return !prev
+          })
+        }}
         className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left text-sm text-slate-800 shadow-sm outline-none transition-all duration-150 hover:border-slate-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
       >
         <span className={selected ? 'truncate text-slate-800' : 'truncate text-slate-400'}>
@@ -343,18 +363,31 @@ function BoundedSelect({ value, onChange, options, placeholder = 'Select option'
 
       {open && (
         <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+          {searchable && (
+            <div className="border-b border-slate-100 p-2">
+              <input
+                autoFocus
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={searchPlaceholder}
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+              />
+            </div>
+          )}
           <div className="max-h-56 overflow-y-auto py-1">
             <button
               type="button"
               onClick={() => {
                 onChange('')
                 setOpen(false)
+                setQuery('')
               }}
               className={`block w-full px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${value ? 'text-slate-500' : 'bg-slate-50 text-slate-700'}`}
             >
               {placeholder}
             </button>
-            {options.map((opt) => {
+            {(searchable ? filteredOptions : options).map((opt) => {
               const active = String(opt.value) === String(value)
               return (
                 <button
@@ -363,6 +396,7 @@ function BoundedSelect({ value, onChange, options, placeholder = 'Select option'
                   onClick={() => {
                     onChange(String(opt.value))
                     setOpen(false)
+                    setQuery('')
                   }}
                   className={`block w-full truncate px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${active ? 'bg-slate-100 font-semibold text-slate-800' : 'text-slate-700'}`}
                   title={opt.label}
@@ -371,6 +405,9 @@ function BoundedSelect({ value, onChange, options, placeholder = 'Select option'
                 </button>
               )
             })}
+            {searchable && filteredOptions.length === 0 && (
+              <p className="px-3.5 py-2 text-xs text-slate-400">{emptySearchText}</p>
+            )}
           </div>
         </div>
       )}
@@ -1133,10 +1170,15 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
     : ''
 
   // Build student options for the dropdown
-  const studentOptions = students.map((s) => ({
-    value: s.student_code,
-    label: `${s.student_code} — ${s.surname}${s.given_name ? ', ' + s.given_name : ''}`,
-  }))
+  const studentOptions = useMemo(() => students.map((s) => {
+    const fullName = formatStudentFullName(s.given_name, s.middle_name, s.surname)
+    return {
+      value: s.student_code,
+      label: `${s.student_code} — ${fullName}`,
+      // Keep matching predictable: student code + visible name parts only.
+      searchText: `${s.student_code} ${fullName} ${s.surname || ''} ${s.given_name || ''}`,
+    }
+  }), [students])
 
   useEffect(() => {
     if (!manualFocusToken) return
@@ -1268,6 +1310,9 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
                       : 'All enrolled students (batch)'
                   }
                   options={studentOptions}
+                  searchable
+                  searchPlaceholder="Search by student code or name"
+                  emptySearchText="No matching students"
                 />
                 {students.length > 0 && (
                   <p className="mt-1 text-[11px] text-slate-400">
@@ -1344,6 +1389,9 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
                       }
                       placeholder="Select student from roster"
                       options={studentOptions}
+                      searchable
+                      searchPlaceholder="Search by student code or name"
+                      emptySearchText="No matching students"
                     />
                   ) : (
                     <TextInput
