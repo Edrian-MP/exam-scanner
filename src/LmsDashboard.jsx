@@ -175,6 +175,16 @@ function gradeBg(row) {
   return 'bg-sky-50 text-sky-700 ring-1 ring-sky-200'
 }
 
+function averageBadgeBg(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) {
+    return 'bg-slate-100 text-slate-500 ring-1 ring-slate-200'
+  }
+  const avg = Number(v)
+  if (avg >= 85) return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+  if (avg >= 75) return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+  return 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'
+}
+
 function initials(name = '') {
   return name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase() || '?'
 }
@@ -1108,16 +1118,54 @@ function AnnouncementsTab({
 /* ═══════════════════════════════════════════════════════
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
-function ScanCenterTab({ scan, templates = [], students = [] }) {
+function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken = '', manualContext = null }) {
   const [actionMode, setActionMode] = useState('scan')
   const [selectedStudentCode, setSelectedStudentCode] = useState('')
   const scannerConnected = Boolean(scan.scanner?.scanner?.connected)
+  const typedStudentCode = String(scan.gradeForm?.student_code || '').trim()
+  const matchedStudent = useMemo(() => {
+    if (!typedStudentCode) return null
+    const needle = typedStudentCode.toUpperCase()
+    return students.find((s) => String(s.student_code || '').trim().toUpperCase() === needle) || null
+  }, [students, typedStudentCode])
+  const matchedStudentName = matchedStudent
+    ? formatStudentFullName(matchedStudent.given_name, matchedStudent.middle_name, matchedStudent.surname)
+    : ''
 
   // Build student options for the dropdown
   const studentOptions = students.map((s) => ({
     value: s.student_code,
     label: `${s.student_code} — ${s.surname}${s.given_name ? ', ' + s.given_name : ''}`,
   }))
+
+  useEffect(() => {
+    if (!manualFocusToken) return
+    setActionMode('manual')
+  }, [manualFocusToken])
+
+  const gradeItems = Array.isArray(scan.gradeAnswerItems) ? scan.gradeAnswerItems : []
+  const answerColumns = useMemo(() => {
+    const total = gradeItems.length
+    if (total <= 10) return 2
+    if (total <= 20) return 4
+    return 5
+  }, [gradeItems.length])
+  const answerRows = useMemo(
+    () => (gradeItems.length > 0 ? Math.ceil(gradeItems.length / answerColumns) : 0),
+    [gradeItems.length, answerColumns]
+  )
+  const answerOrder = useMemo(() => {
+    if (!gradeItems.length || !answerRows) return []
+    const ordered = []
+    for (let row = 0; row < answerRows; row += 1) {
+      for (let col = 0; col < answerColumns; col += 1) {
+        const idx = col * answerRows + row
+        if (idx < gradeItems.length) ordered.push(idx)
+      }
+    }
+    return ordered
+  }, [gradeItems.length, answerRows, answerColumns])
+  const answerInputRefs = useRef([])
 
   return (
     <div className="min-h-[520px] p-6">
@@ -1248,56 +1296,115 @@ function ScanCenterTab({ scan, templates = [], students = [] }) {
           ) : (
             /* ── Manual Submission mode ── */
             <form onSubmit={scan.onGrade} className="space-y-3">
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                <p className="text-xs font-semibold text-emerald-700">Fallback workflow</p>
-                <p className="mt-1 text-xs text-emerald-700/80">
-                  Use this when scanner is unavailable or for corrections.
-                </p>
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-xs font-semibold text-emerald-700">Fallback workflow</p>
+                  <p className="mt-1 text-xs text-emerald-700/80">
+                    Use this when scanner is unavailable or for corrections.
+                  </p>
+                  {manualContext?.activityTitle && manualContext?.studentCode && (
+                    <p className="mt-1 text-xs font-semibold text-emerald-700">
+                      Prefilled from gradebook: {manualContext.activityTitle} ({manualContext.studentCode})
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-600">Checked Result</p>
+                  {scan.lastResult && scan.lastResult.score !== undefined && scan.lastResult.total_items !== undefined ? (
+                    <>
+                      <p className="mt-1 text-sm font-bold text-slate-800">
+                        {scan.lastResult.student_code} - {scan.lastResult.score}/{scan.lastResult.total_items}
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-600">{scan.lastResult.exam_title}</p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-600">No checked result yet.</p>
+                  )}
+                </div>
               </div>
 
-              <Field label="Exam Template">
-                <BoundedSelect
-                  value={scan.gradeForm?.exam_id || ''}
-                  onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, exam_id: nextValue }))}
-                  placeholder="Select exam template"
-                  options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
-                />
-              </Field>
-
-              {/* Student: dropdown from roster if enrolled, otherwise free-text */}
-              <Field label="Student">
-                {students.length > 0 ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Exam Template">
                   <BoundedSelect
-                    value={scan.gradeForm?.student_code || ''}
-                    onChange={(nextValue) =>
-                      scan.setGradeForm((p) => ({ ...p, student_code: nextValue }))
-                    }
-                    placeholder="Select student from roster"
-                    options={studentOptions}
+                    value={scan.gradeForm?.exam_id || ''}
+                    onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, exam_id: nextValue }))}
+                    placeholder="Select exam template"
+                    options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
                   />
-                ) : (
-                  <TextInput
-                    required
-                    value={scan.gradeForm?.student_code || ''}
-                    onChange={(e) =>
-                      scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))
-                    }
-                    placeholder="2021-00001"
-                  />
-                )}
-              </Field>
+                </Field>
+
+                {/* Student: dropdown from roster if enrolled, otherwise free-text */}
+                <Field label="Student">
+                  {students.length > 0 ? (
+                    <BoundedSelect
+                      value={scan.gradeForm?.student_code || ''}
+                      onChange={(nextValue) =>
+                        scan.setGradeForm((p) => ({ ...p, student_code: nextValue }))
+                      }
+                      placeholder="Select student from roster"
+                      options={studentOptions}
+                    />
+                  ) : (
+                    <TextInput
+                      required
+                      value={scan.gradeForm?.student_code || ''}
+                      onChange={(e) =>
+                        scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))
+                      }
+                      placeholder="2021-00001"
+                    />
+                  )}
+                  {!!typedStudentCode && (
+                    <p className={`mt-1 text-xs ${matchedStudent ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {matchedStudent
+                        ? `${typedStudentCode} — ${matchedStudentName}`
+                        : `${typedStudentCode} — No matching student found in class roster`}
+                    </p>
+                  )}
+                </Field>
+              </div>
 
               <Field label="Answers">
-                <TextareaInput
-                  required
-                  ref={scan.gradeAnswersRef}
-                  value={scan.gradeAnswersDisplay || ''}
-                  onChange={() => {}}
-                  onKeyDown={scan.onGradeAnswersKeyDown}
-                  onPaste={scan.onGradeAnswersPaste}
-                  className="h-36 font-mono text-sm leading-6"
-                  placeholder="A"
-                />
+                {gradeItems.length > 0 ? (
+                  <div
+                    className="grid gap-2"
+                    style={{ gridTemplateColumns: `repeat(${answerColumns}, minmax(0, 1fr))` }}
+                  >
+                    {answerOrder.map((idx) => (
+                      <div key={`answer-item-${idx}`} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+                        <span className="w-7 text-right font-mono text-xs font-semibold text-slate-500">{idx + 1}.</span>
+                        <input
+                          required
+                          ref={(el) => { answerInputRefs.current[idx] = el }}
+                          value={gradeItems[idx] || ''}
+                          onChange={(e) => {
+                            const nextValue = String(e.target.value || '')
+                              .toUpperCase()
+                              .replace(/[^A-E/]/g, '')
+                              .replace(/\/{2,}/g, '/')
+                              .replace(/^\/+/, '')
+                              .replace(/\/+$/, '')
+                            scan.onSetGradeAnswerItem?.(idx, nextValue)
+                            if (/^[A-E]$/.test(nextValue) && idx + 1 < gradeItems.length) {
+                              requestAnimationFrame(() => {
+                                const nextInput = answerInputRefs.current[idx + 1]
+                                if (nextInput) {
+                                  nextInput.focus()
+                                  nextInput.select()
+                                }
+                              })
+                            }
+                          }}
+                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-mono text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                          placeholder="A"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400">Select an exam template to load answer items.</p>
+                )}
               </Field>
 
               <SubmitBtn
@@ -1310,24 +1417,14 @@ function ScanCenterTab({ scan, templates = [], students = [] }) {
           )}
         </section>
       </div>
-
-      {/* Last result only — Latest Template card removed */}
-      {scan.lastResult && (
-        <div className="mt-6 border-t border-slate-100 pt-5">
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-            <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-500">Last Result</p>
-            <p className="mt-1.5 text-sm font-bold text-slate-800">
-              {scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}
-            </p>
-            <p className="mt-0.5 text-xs text-slate-500">{scan.lastResult.exam_title}</p>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-function GradebookTab({ gradebook, atRiskStudents }) {
+function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], onOpenPendingActivity = () => {} }) {
+  const [expandedStudentId, setExpandedStudentId] = useState('')
+  const hasExpanded = Boolean(expandedStudentId)
+
   return (
     <div className="min-h-[520px] p-6">
       {/* Summary pills */}
@@ -1351,34 +1448,183 @@ function GradebookTab({ gradebook, atRiskStudents }) {
           <table className="min-w-full text-sm">
             <thead className="sticky top-0 bg-white z-10">
               <tr className="border-b border-slate-100">
-                {['Student', 'Code', 'Completed', 'Published', 'Average'].map((h) => (
-                  <th key={h} className="pb-3 pr-6 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">{h}</th>
+                {['Student', 'Published Activities'].map((h) => (
+                  <th key={h} className="pb-3 pr-4 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">{h}</th>
+                ))}
+                {['Completed', 'Average'].map((h) => (
+                  <th key={h} className="pb-3 pr-4 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {gradebook.map((row) => {
                 const displayName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
-                return (
-                  <tr key={row.student_id} className="border-b border-slate-50 transition hover:bg-slate-50">
-                    <td className="py-3 pr-6">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">
-                          {initials(displayName)}
+                const details = Array.isArray(row.published_details) ? row.published_details : []
+                const checkedItems = details.filter((activity) => activity.status === 'checked')
+                const pendingCount = details.length - checkedItems.length
+                const completedCount = Number(row.completed_activities || 0)
+                const publishedCount = Number(row.published_activities || 0)
+                const avg = Number(row.average_percent || 0)
+                const hasAvg = row.average_percent !== null && row.average_percent !== undefined && !Number.isNaN(avg)
+                const isAtRisk = publishedCount > 0 && (completedCount < publishedCount || (hasAvg && avg < 75))
+                const segmentCount = publishedCount > 0 ? Math.min(publishedCount, 12) : 0
+                const filledSegments = publishedCount > 0
+                  ? Math.round((Math.min(completedCount, publishedCount) / publishedCount) * segmentCount)
+                  : 0
+                const isExpanded = String(expandedStudentId) === String(row.student_id)
+                const isDimmed = hasExpanded && !isExpanded
+
+                return [
+                  <tr
+                    key={`row-${row.student_id}`}
+                    onClick={() => setExpandedStudentId((prev) => (String(prev) === String(row.student_id) ? '' : String(row.student_id)))}
+                    className={`cursor-pointer border-b border-slate-50 transition-all duration-700 hover:bg-slate-50 ${isAtRisk ? 'bg-rose-50/30' : ''} ${isExpanded ? 'bg-brand-50/40 shadow-[inset_0_-1px_0_rgba(148,163,184,0.15)]' : ''} ${isDimmed ? 'opacity-40' : ''}`}
+                  >
+                    <td className={`py-3 pr-3 ${isAtRisk ? 'border-l-2 border-rose-200 pl-2' : ''}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500">
+                            {initials(`${row.given_name || ''} ${row.surname || ''}`.trim() || row.surname)}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-slate-800">
+                              {displayName}
+                            </p>
+                            <p className="font-mono text-[11px] text-slate-400">{row.student_code}</p>
+                          </div>
                         </div>
-                        <span className="font-semibold text-slate-800">{displayName}</span>
+                        <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-400">
+                          <span>{isExpanded ? 'Hide' : 'Details'}</span>
+                          <svg
+                            className={`h-3.5 w-3.5 transition-transform duration-700 ${isExpanded ? 'rotate-180 text-brand-500' : ''}`}
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                          >
+                            <path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </div>
                       </div>
                     </td>
-                    <td className="py-3 pr-6 font-mono text-xs text-slate-500">{row.student_code}</td>
-                    <td className="py-3 pr-6 text-slate-700">{row.completed_activities}</td>
-                    <td className="py-3 pr-6 text-slate-700">{row.published_activities}</td>
-                    <td className="py-3">
-                      <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${gradeBg(row)}`}>
+                    <td className="py-3 pr-4">
+                      <div className="flex w-full items-center gap-2">
+                        {details.length > 0 ? (
+                          <>
+                            <div className="flex flex-wrap items-center gap-1">
+                              {checkedItems.map((activity) => {
+                                const label = `${activity.title}: ${activity.score}/${activity.total_items || activity.max_score || '-'}`
+                                return (
+                                  <span
+                                    key={`${row.student_id}-${activity.activity_id}`}
+                                    title={label}
+                                    className="h-2.5 w-2.5 rounded-sm bg-emerald-500 ring-1 ring-emerald-300"
+                                  />
+                                )
+                              })}
+                              {checkedItems.length === 0 && (
+                                <span className="text-xs text-slate-400">-</span>
+                              )}
+                            </div>
+                            {pendingCount > 0 && (
+                              <span className="text-xs font-semibold text-slate-500">
+                                +{pendingCount} pending
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400">No published activities</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 pr-4 text-center text-slate-700">
+                      {publishedCount > 0 ? (
+                        <div className="inline-flex flex-col items-center gap-1">
+                          <div className="flex items-center gap-0.5" title={`${completedCount}/${publishedCount} completed`}>
+                            {Array.from({ length: segmentCount }).map((_, idx) => (
+                              <span
+                                key={`${row.student_id}-segment-${idx}`}
+                                className={`h-2 w-2 rounded-[2px] ${idx < filledSegments ? 'bg-emerald-500' : 'bg-slate-200'}`}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-xs">{completedCount}/{publishedCount}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">-</span>
+                      )}
+                    </td>
+                    <td className="py-3 pr-0 text-center">
+                      <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${averageBadgeBg(row.average_percent)}`}>
                         {formatPercent(row.average_percent)}
                       </span>
                     </td>
-                  </tr>
-                )
+                  </tr>,
+                  <tr key={`details-${row.student_id}`} className={`${isDimmed ? 'opacity-35' : ''}`}>
+                    <td colSpan={4} className="p-0">
+                      <div className={`overflow-hidden transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isExpanded ? 'max-h-[820px] opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-1'}`}>
+                        <div className="mx-2 mb-2 rounded-xl border border-slate-200/90 bg-slate-50/70 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+                          <div className="mx-auto w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                          <p className="mb-2 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400">Published Activity Details</p>
+                          {details.length > 0 ? (
+                            <div className="space-y-1.5">
+                              {details.map((activity) => {
+                                const checked = activity.status === 'checked'
+                                const pending = activity.status === 'pending'
+                                const statusLabel = checked ? 'Checked' : pending ? 'Pending' : 'Posted'
+                                const statusClass = checked
+                                  ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                                  : pending
+                                    ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+                                    : 'bg-slate-100 text-slate-600'
+                                const scoreLabel = checked
+                                  ? `${activity.score}/${activity.total_items || activity.max_score || '-'}`
+                                  : '-'
+                                const computedPercent = checked
+                                  ? (activity.percent ?? (
+                                      Number(activity.total_items || activity.max_score || 0) > 0
+                                        ? ((Number(activity.score || 0) / Number(activity.total_items || activity.max_score || 1)) * 100)
+                                        : null
+                                    ))
+                                  : null
+                                const percentLabel = computedPercent !== null && computedPercent !== undefined && !Number.isNaN(Number(computedPercent))
+                                  ? `${Math.round(Number(computedPercent) * 100) / 100}%`
+                                  : '-'
+
+                                return (
+                                  <button
+                                    key={`detail-item-${row.student_id}-${activity.activity_id}`}
+                                    type="button"
+                                    disabled={!pending}
+                                    onClick={() => {
+                                      if (!pending) return
+                                      onOpenPendingActivity(row, activity)
+                                    }}
+                                    className={`mx-auto flex w-full max-w-xl items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-left ${pending ? 'cursor-pointer hover:border-brand-200 hover:bg-white' : 'cursor-default'}`}
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-semibold text-slate-700">{activity.title}</p>
+                                      <p className="text-[11px] uppercase tracking-wide text-slate-400">{activity.activity_type}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusClass}`}>{statusLabel}</span>
+                                      <span className="font-mono text-xs text-slate-600">{scoreLabel}</span>
+                                      <span className="font-mono text-xs text-slate-500">{percentLabel}</span>
+                                      {pending && <span className="text-[11px] font-semibold text-brand-600">Check now</span>}
+                                    </div>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <p className="text-center text-xs text-slate-400">No published activities for this subject yet.</p>
+                          )}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>,
+                ]
               })}
             </tbody>
           </table>
@@ -1389,6 +1635,11 @@ function GradebookTab({ gradebook, atRiskStudents }) {
           title="No gradebook data yet"
           description="Enroll students and post exam activities to see grades here."
         />
+      )}
+      {gradebook.length > 0 && publishedActivities.length > 0 && (
+        <p className="mt-3 text-[11px] text-slate-400">
+          Showing {publishedActivities.length} published activit{publishedActivities.length === 1 ? 'y' : 'ies'} per student.
+        </p>
       )}
     </div>
   )
@@ -1558,6 +1809,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [activities, setActivities]               = useState([])
   const [announcements, setAnnouncements]         = useState([])
   const [gradebook, setGradebook]                 = useState([])
+  const [gradebookPublishedActivities, setGradebookPublishedActivities] = useState([])
   const [loading, setLoading]                     = useState(false)
   const [error, setError]                         = useState('')
   const [busyAction, setBusyAction]               = useState('')
@@ -1577,6 +1829,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [editingActivityId, setEditingActivityId] = useState('')
   const [editingAnnouncementId, setEditingAnnouncementId] = useState('')
   const [activeTab, setActiveTab]                 = useState('roster')
+  const [scanManualFocusToken, setScanManualFocusToken] = useState('')
+  const [scanManualContext, setScanManualContext] = useState(null)
   const subjectSortMenuRef                         = useRef(null)
 
   const selectedSubject     = useMemo(() => subjects.find((s) => String(s.id) === String(selectedSubjectId)), [subjects, selectedSubjectId])
@@ -1671,7 +1925,14 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setStudents(sR.data || [])
     setActivities(aR.data || [])
     setAnnouncements(anR.data || [])
-    setGradebook(gR.data || [])
+    const gradebookData = gR.data || []
+    if (Array.isArray(gradebookData)) {
+      setGradebook(gradebookData)
+      setGradebookPublishedActivities([])
+    } else {
+      setGradebook(gradebookData.rows || [])
+      setGradebookPublishedActivities(gradebookData.published_activities || [])
+    }
   }
 
   async function refreshSubjectAndHomepage(id) {
@@ -1698,6 +1959,12 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
   }, [selectedSubjectId])
+
+  useEffect(() => {
+    const submissionId = scan?.lastResult?.submission_id
+    if (!selectedSubjectId || !submissionId) return
+    loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message))
+  }, [selectedSubjectId, scan?.lastResult?.submission_id])
 
   useEffect(() => {
     if (!subjectSortMenuOpen) return
@@ -1752,7 +2019,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     try {
       await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
       setSelectedSubjectId('')
-      setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([])
+      setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([]); setGradebookPublishedActivities([])
       await loadSubjects()
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
@@ -2042,6 +2309,35 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
+  function onOpenPendingActivity(row, activity) {
+    if (!hasScanCenter) return
+
+    const linkedExamId = activity?.exam_id ? String(activity.exam_id) : ''
+    const fallbackExam = (scan.exams || []).find(
+      (exam) => String(exam?.title || '').trim().toLowerCase() === String(activity?.title || '').trim().toLowerCase()
+    )
+    const resolvedExamId = linkedExamId || (fallbackExam ? String(fallbackExam.id) : '')
+    const studentCode = String(row?.student_code || '').trim()
+
+    if (scan?.setGradeForm) {
+      scan.setGradeForm((prev) => ({
+        ...prev,
+        exam_id: resolvedExamId || prev.exam_id || '',
+        student_code: studentCode,
+      }))
+    }
+    if (scan?.setScanRequest && resolvedExamId) {
+      scan.setScanRequest({ exam_id: resolvedExamId })
+    }
+
+    setScanManualContext({
+      activityTitle: String(activity?.title || ''),
+      studentCode,
+    })
+    setScanManualFocusToken(`${Date.now()}-${row?.student_id || ''}-${activity?.activity_id || ''}`)
+    setActiveTab('scan')
+  }
+
   /* ── render ─────────────────────────────────────────── */
   return (
     <main className="mx-auto max-w-7xl px-4 pt-3 pb-6 sm:px-6 lg:px-8">
@@ -2263,10 +2559,21 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
               />
             )}
             {activeTab === 'scan' && hasScanCenter && (
-              <ScanCenterTab scan={scan} templates={scanTemplates} />
+              <ScanCenterTab
+                scan={scan}
+                templates={scanTemplates}
+                students={students}
+                manualFocusToken={scanManualFocusToken}
+                manualContext={scanManualContext}
+              />
             )}
             {activeTab === 'gradebook' && (
-              <GradebookTab gradebook={gradebook} atRiskStudents={atRiskStudents} />
+              <GradebookTab
+                gradebook={gradebook}
+                atRiskStudents={atRiskStudents}
+                publishedActivities={gradebookPublishedActivities}
+                onOpenPendingActivity={onOpenPendingActivity}
+              />
             )}
           </div>
         </div>

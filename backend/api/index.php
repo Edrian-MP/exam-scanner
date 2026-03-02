@@ -1281,36 +1281,158 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
     $subjectId = (int) $matches[1];
     find_subject_or_404($subjectId, $educatorId);
 
-    $stmt = db()->prepare(
+    $studentsStmt = db()->prepare(
         'SELECT st.id AS student_id,
                 st.student_code,
                 st.surname,
                 st.given_name,
-                st.middle_name,
-                COUNT(DISTINCT CASE WHEN a.publish_status = "published" THEN a.id END) AS published_activities,
-                COUNT(DISTINCT CASE WHEN a.publish_status = "published" AND sub.id IS NOT NULL THEN a.id END) AS completed_activities,
-                ROUND(AVG(
-                    CASE
-                        WHEN sub.id IS NULL OR ex.total_items IS NULL OR ex.total_items = 0 THEN NULL
-                        ELSE (sub.score / ex.total_items) * 100
-                    END
-                ), 2) AS average_percent
+                st.middle_name
          FROM subject_students ss
          INNER JOIN students st ON st.id = ss.student_id
-         LEFT JOIN subject_activities a
-            ON a.subject_id = ss.subject_id
-            AND a.activity_type = "exam"
-            AND a.exam_id IS NOT NULL
-         LEFT JOIN exams ex ON ex.id = a.exam_id
-         LEFT JOIN submissions sub
-            ON sub.exam_id = a.exam_id
-            AND sub.student_code = st.student_code
          WHERE ss.subject_id = :subject_id
-         GROUP BY st.id, st.student_code, st.surname, st.given_name, st.middle_name
          ORDER BY st.surname ASC, st.given_name ASC, st.middle_name ASC'
     );
-    $stmt->execute([':subject_id' => $subjectId]);
-    json_response(200, ['ok' => true, 'data' => $stmt->fetchAll()]);
+    $studentsStmt->execute([':subject_id' => $subjectId]);
+    $students = $studentsStmt->fetchAll();
+
+    $publishedStmt = db()->prepare(
+        'SELECT a.id AS activity_id,
+                a.title,
+                a.activity_type,
+                a.exam_id,
+                a.max_score,
+                a.due_at,
+                a.created_at,
+                ex.total_items
+         FROM subject_activities a
+         LEFT JOIN exams ex ON ex.id = a.exam_id
+         WHERE a.subject_id = :subject_id
+           AND a.publish_status = "published"
+         ORDER BY COALESCE(a.due_at, a.created_at) ASC, a.id ASC'
+    );
+    $publishedStmt->execute([':subject_id' => $subjectId]);
+    $publishedActivities = array_map(static function (array $row): array {
+        return [
+            'activity_id' => (int) ($row['activity_id'] ?? 0),
+            'title' => (string) ($row['title'] ?? ''),
+            'activity_type' => (string) ($row['activity_type'] ?? 'activity'),
+            'exam_id' => isset($row['exam_id']) ? (int) $row['exam_id'] : null,
+            'max_score' => (int) ($row['max_score'] ?? 0),
+            'due_at' => $row['due_at'] ?? null,
+            'total_items' => isset($row['total_items']) ? (int) $row['total_items'] : null,
+        ];
+    }, $publishedStmt->fetchAll());
+
+    $scoredExamIds = [];
+    foreach ($publishedActivities as $activity) {
+        if (($activity['exam_id'] ?? null) !== null) {
+            $scoredExamIds[(int) $activity['exam_id']] = true;
+        }
+    }
+    $scoredExamIds = array_values(array_map('intval', array_keys($scoredExamIds)));
+
+    $scoresByStudent = [];
+    if (count($scoredExamIds) > 0) {
+        $placeholders = implode(',', array_fill(0, count($scoredExamIds), '?'));
+        $scoresSql = sprintf(
+            'SELECT s.student_code, s.exam_id, MAX(s.score) AS best_score
+             FROM submissions s
+             WHERE s.exam_id IN (%s)
+             GROUP BY s.student_code, s.exam_id',
+            $placeholders
+        );
+        $scoresStmt = db()->prepare($scoresSql);
+        $scoresStmt->execute($scoredExamIds);
+        foreach ($scoresStmt->fetchAll() as $scoreRow) {
+            $studentCode = strtoupper(trim((string) ($scoreRow['student_code'] ?? '')));
+            $examId = (int) ($scoreRow['exam_id'] ?? 0);
+            $bestScore = (int) ($scoreRow['best_score'] ?? 0);
+            if ($studentCode === '' || $examId < 1) {
+                continue;
+            }
+            if (!isset($scoresByStudent[$studentCode])) {
+                $scoresByStudent[$studentCode] = [];
+            }
+            $scoresByStudent[$studentCode][$examId] = $bestScore;
+        }
+    }
+
+    $rows = [];
+    foreach ($students as $student) {
+        $studentCodeRaw = (string) ($student['student_code'] ?? '');
+        $studentCode = strtoupper(trim($studentCodeRaw));
+        $studentScores = $scoresByStudent[$studentCode] ?? [];
+
+        $publishedCount = count($publishedActivities);
+        $completedCount = 0;
+        $percentSum = 0.0;
+        $details = [];
+
+        foreach ($publishedActivities as $activity) {
+            $examId = $activity['exam_id'];
+            $totalItems = $activity['total_items'];
+            $score = null;
+            $percent = null;
+            $status = 'posted';
+
+            if ($examId !== null && isset($studentScores[(int) $examId])) {
+                $score = (int) $studentScores[(int) $examId];
+                $status = 'checked';
+                $completedCount++;
+            } elseif ($examId !== null) {
+                $status = 'pending';
+            }
+
+            $activityTotalItems = 0;
+            if ($totalItems !== null && (int) $totalItems > 0) {
+                $activityTotalItems = (int) $totalItems;
+            } elseif ((int) ($activity['max_score'] ?? 0) > 0) {
+                // Fallback for activities without linked exam total_items.
+                $activityTotalItems = (int) $activity['max_score'];
+            }
+
+            if ($activityTotalItems > 0) {
+                $percent = round((max(0, min((int) ($score ?? 0), $activityTotalItems)) / $activityTotalItems) * 100, 2);
+            }
+            $percentSum += (float) ($percent ?? 0.0);
+
+            $details[] = [
+                'activity_id' => (int) $activity['activity_id'],
+                'title' => (string) $activity['title'],
+                'activity_type' => (string) $activity['activity_type'],
+                'exam_id' => $examId,
+                'max_score' => (int) $activity['max_score'],
+                'total_items' => $totalItems,
+                'status' => $status,
+                'score' => $score,
+                'percent' => $percent,
+            ];
+        }
+
+        $averagePercent = $publishedCount > 0
+            ? round($percentSum / $publishedCount, 2)
+            : null;
+
+        $rows[] = [
+            'student_id' => (int) ($student['student_id'] ?? 0),
+            'student_code' => $studentCodeRaw,
+            'surname' => (string) ($student['surname'] ?? ''),
+            'given_name' => (string) ($student['given_name'] ?? ''),
+            'middle_name' => (string) ($student['middle_name'] ?? ''),
+            'published_activities' => $publishedCount,
+            'completed_activities' => $completedCount,
+            'average_percent' => $averagePercent,
+            'published_details' => $details,
+        ];
+    }
+
+    json_response(200, [
+        'ok' => true,
+        'data' => [
+            'rows' => $rows,
+            'published_activities' => $publishedActivities,
+        ],
+    ]);
 }
 
 json_response(404, ['ok' => false, 'error' => 'Route not found']);

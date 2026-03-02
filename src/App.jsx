@@ -269,7 +269,11 @@ function App() {
     setError('')
     try {
       const result = await apiPost('/scanner/scan', scanRequest)
-      setLastResult(result)
+      const scanData = result?.data || null
+      const scoredResult = scanData?.scan || scanData
+      if (scoredResult && scoredResult.score !== undefined && scoredResult.total_items !== undefined) {
+        setLastResult(scoredResult)
+      }
       await bootstrap()
     } catch (err) {
       setError(err.message)
@@ -294,7 +298,7 @@ function App() {
         ...gradeForm,
         answers: normalizedItems.join('\n'),
       })
-      setLastResult(result)
+      setLastResult(result?.data || null)
       setGradeForm((s) => ({ ...s, student_code: '' }))
       setGradeAnswerItems(createEmptyItems(total))
     } catch (err) {
@@ -302,6 +306,18 @@ function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function onSetGradeAnswerItem(index, value) {
+    const idx = Number(index)
+    if (!Number.isInteger(idx) || idx < 0) return
+    const normalized = normalizeItem(String(value || ''))
+    setGradeAnswerItems((prev) => {
+      if (idx >= prev.length) return prev
+      const next = [...prev]
+      next[idx] = normalized
+      return next
+    })
   }
 
   function onTotalItemsChange(value) {
@@ -542,6 +558,8 @@ function App() {
           gradeForm,
           setGradeForm,
           selectedGradeExam,
+          gradeAnswerItems,
+          onSetGradeAnswerItem,
           gradeAnswersRef,
           gradeAnswersDisplay: gradeAnswersGrid.display,
           onGradeAnswersKeyDown: gradeAnswersGrid.onKeyDown,
