@@ -73,39 +73,11 @@ export default function useAnswerGrid({ items, setItems, ref, normalizeItem }) {
       setCursorToLine(ref, line, items)
       return
     }
-    if (key === '/') {
-      e.preventDefault()
-      if (/^[A-Z]$/.test(current)) {
-        setItems((prev) => {
-          const next = [...prev]
-          next[line] = `${current}/`
-          return next
-        })
-        setCursorToLine(ref, line, items)
-        return
-      }
-      if (current === '' && line > 0 && /^[A-Z]$/.test(items[line - 1] || '')) {
-        setItems((prev) => {
-          const next = [...prev]
-          next[line - 1] = `${next[line - 1]}/`
-          return next
-        })
-        setCursorToLine(ref, line - 1, items)
-        return
-      }
-      return
-    }
     if (/^[a-zA-Z]$/.test(key)) {
       e.preventDefault()
-      const upper = key.toUpperCase()
       setItems((prev) => {
         const next = [...prev]
-        const lineValue = next[line] || ''
-        if (lineValue.endsWith('/')) {
-          next[line] = `${lineValue}${upper}`
-        } else {
-          next[line] = upper
-        }
+        next[line] = key.toUpperCase()
         return next
       })
       setCursorToLine(ref, line + 1, items)

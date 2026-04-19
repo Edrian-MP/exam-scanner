@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { API_BASE, apiGet, apiPost } from './lib/api'
+import { API_BASE, apiDelete, apiGet, apiPost } from './lib/api'
 import LmsDashboard from './LmsDashboard'
 import LoginPage from './LoginPage'
 import AccountSettingsPage from './AccountSettingsPage'
@@ -24,16 +24,15 @@ function createEmptyItems(total) {
 }
 
 function normalizeItem(value) {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z/]/g, '')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
+  return value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1)
 }
 
 function isValidItem(value) {
-  return /^[A-Z](\/[A-Z])*$/.test(value)
+  return /^[A-Z]$/.test(value)
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function extractTotalItemsFromText(text) {
@@ -146,8 +145,11 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [pdfImportStatus, setPdfImportStatus] = useState('')
+  const [scanSession, setScanSession] = useState(null)   // null | { session_id, status: 'scanning'|'review' }
+  const [stagedSheets, setStagedSheets] = useState([])
   const answerKeyRef = useRef(null)
   const gradeAnswersRef = useRef(null)
+  const scanPollRef = useRef(null)
 
   const latestExam = useMemo(() => exams[0] || null, [exams])
   const selectedGradeExam = useMemo(
@@ -281,6 +283,153 @@ function App() {
       setBusy(false)
     }
   }
+
+  // ── Batch scan ──────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!scanSession || scanSession.status !== 'scanning') {
+      if (scanPollRef.current != null) {
+        clearTimeout(scanPollRef.current)
+        scanPollRef.current = null
+      }
+      return
+    }
+    const sid = scanSession.session_id
+    let active = true
+
+    async function poll() {
+      try {
+        const res = await apiGet(`/scan/session/${sid}/results`)
+        if (active) setStagedSheets(res.data?.sheets || [])
+      } catch {
+        // ignore transient poll errors
+      }
+      if (active) scanPollRef.current = setTimeout(poll, 2000)
+    }
+
+    scanPollRef.current = setTimeout(poll, 2000)
+    return () => {
+      active = false
+      if (scanPollRef.current != null) {
+        clearTimeout(scanPollRef.current)
+        scanPollRef.current = null
+      }
+    }
+  }, [scanSession?.session_id, scanSession?.status])
+
+  async function waitForScannerIdle(timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs
+    let lastStatus = null
+
+    while (Date.now() <= deadline) {
+      try {
+        lastStatus = await apiGet('/scanner/status')
+        setScanner(lastStatus)
+        if (!lastStatus?.scanner?.batch_running) return true
+      } catch {
+        // Let the caller decide whether stale scanner status is fatal.
+      }
+      await sleep(500)
+    }
+
+    return lastStatus ? !lastStatus?.scanner?.batch_running : false
+  }
+
+  async function onStartBatchScan() {
+    setBusy(true)
+    setError('')
+    try {
+      const sessionResult = await apiPost('/scan/session/start', {})
+      const sessionId = sessionResult?.data?.session_id
+      if (!sessionId) throw new Error('Failed to create scan session.')
+      setScanSession({ session_id: sessionId, status: 'scanning' })
+      setStagedSheets([])
+      // Tell Python service to start — returns immediately, scan runs in background
+      await apiPost('/scanner/batch-scan', { session_id: sessionId })
+    } catch (err) {
+      setError(err.message)
+      setScanSession(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onStopBatchScan() {
+    setBusy(true)
+    setError('')
+    let stopped = false
+    try {
+      await apiPost('/scanner/batch-stop', {
+        session_id: scanSession?.session_id,
+        wait: true,
+      })
+      const idle = await waitForScannerIdle()
+      if (!idle) throw new Error('Scanner is still stopping. Please try again in a moment.')
+      stopped = true
+    } catch (err) {
+      setError(err.message)
+    }
+    if (!stopped) {
+      setBusy(false)
+      return
+    }
+    // Do a final poll then move to review
+    if (scanSession?.session_id) {
+      try {
+        const res = await apiGet(`/scan/session/${scanSession.session_id}/results`)
+        setStagedSheets(res.data?.sheets || [])
+      } catch {
+        // ignore
+      }
+    }
+    setScanSession((prev) => prev ? { ...prev, status: 'review' } : null)
+    setBusy(false)
+  }
+
+  async function onCommitSession(sheets) {
+    if (!scanSession?.session_id) return null
+    setBusy(true)
+    setError('')
+    try {
+      const result = await apiPost(`/scan/session/${scanSession.session_id}/commit`, { sheets })
+      await bootstrap()
+      setScanSession(null)
+      setStagedSheets([])
+      return result?.data ?? null
+    } catch (err) {
+      setError(err.message)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onDiscardSession() {
+    if (!scanSession?.session_id) return
+    setBusy(true)
+    setError('')
+    try {
+      await apiPost('/scanner/batch-stop', {
+        session_id: scanSession.session_id,
+        wait: true,
+      })
+      const idle = await waitForScannerIdle()
+      if (!idle) throw new Error('Scanner is still stopping. Please try again in a moment.')
+      await apiDelete(`/scan/session/${scanSession.session_id}`)
+      setScanSession(null)
+      setStagedSheets([])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function onUpdateStagedSheet(updatedSheet) {
+    setStagedSheets((prev) => prev.map((s) => s.id === updatedSheet.id ? updatedSheet : s))
+  }
+
+  // ── Manual grade ─────────────────────────────────────────────────────────────
 
   async function onGrade(e) {
     e.preventDefault()
@@ -569,6 +718,13 @@ function App() {
           lastResult,
           busy,
           error,
+          scanSession,
+          stagedSheets,
+          onStartBatchScan,
+          onStopBatchScan,
+          onCommitSession,
+          onDiscardSession,
+          onUpdateStagedSheet,
         }}
       />
     </>

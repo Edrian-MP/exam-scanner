@@ -140,9 +140,9 @@ function LoginPage({ apiBase, onLogin, onSignUp, busy, error }) {
             </button>
           </form>
 
-          <footer className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+          {/* <footer className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
             API: <span className="font-mono text-slate-700">{apiBase}</span>
-          </footer>
+          </footer> */}
         </div>
       </section>
     </main>

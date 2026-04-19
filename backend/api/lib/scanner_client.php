@@ -20,6 +20,8 @@ function scanner_request(string $path, string $method = 'GET', ?array $payload =
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
         if ($body !== null) {
             curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
         }
@@ -32,7 +34,7 @@ function scanner_request(string $path, string $method = 'GET', ?array $payload =
                 'method' => $method,
                 'header' => implode("\r\n", $headers),
                 'content' => $body ?? '',
-                'timeout' => 7,
+                'timeout' => 12,
             ],
         ]);
         $response = @file_get_contents($url, false, $context);

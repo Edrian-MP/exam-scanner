@@ -1,110 +1,489 @@
 #!/usr/bin/env python3
-"""Local scanner service (Windows) for pyserial + WIA integration."""
+"""
+Local scanner service (Windows) — batch OMR scanning via WIA + Arduino feeder.
+
+Endpoints
+---------
+GET  /status         → scanner / Arduino connection status
+POST /scan           → legacy single-scan (kept for backwards compatibility)
+POST /batch-scan     → start a background batch scan loop for a session
+POST /batch-stop     → signal the running batch loop to stop
+"""
 
 from __future__ import annotations
 
+import io
 import json
-import random
+import logging
+import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+
+import omr  # local module
+
+# ── Optional dependencies ─────────────────────────────────────────────────────
 
 try:
     import serial  # type: ignore
-except Exception:  # pragma: no cover
-    serial = None
+    _SERIAL_AVAILABLE = True
+except Exception:
+    serial = None  # type: ignore
+    _SERIAL_AVAILABLE = False
 
+try:
+    import pythoncom        # type: ignore
+    import win32com.client  # type: ignore
+    _WIA_AVAILABLE = True
+except Exception:
+    pythoncom = None        # type: ignore
+    win32com = None         # type: ignore
+    _WIA_AVAILABLE = False
+
+try:
+    from PIL import Image  # type: ignore
+    _PIL_AVAILABLE = True
+except Exception:
+    Image = None  # type: ignore
+    _PIL_AVAILABLE = False
+
+try:
+    import requests as _requests
+    _REQUESTS_AVAILABLE = True
+except Exception:
+    _requests = None  # type: ignore
+    _REQUESTS_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+PHP_API_BASE      = "http://localhost/exam-scanner/backend/api"
+SERIAL_PORT       = "COM3"
+SERIAL_BAUD       = 9600
+SERIAL_TIMEOUT    = 10      # seconds to wait for SHEET_FED response
+INTER_SHEET_DELAY = 1.5     # seconds between sheets
+MAX_UNREADABLE    = 3       # consecutive unreadable sheets before stopping
+STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
+OUT_DIR           = Path(__file__).resolve().parent / "scans"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Global state ──────────────────────────────────────────────────────────────
 
 class ScannerState:
     def __init__(self) -> None:
         self.last_scan_at: str | None = None
         self.last_output: str | None = None
+        self.active_session_id: str | None = None
+        self._batch_thread: threading.Thread | None = None
+        self._stop_flag   = threading.Event()
+        self._batch_lock  = threading.Lock()
+        self._batch_running = False
 
     def scanner_connected(self) -> bool:
-        return serial is not None
+        return _WIA_AVAILABLE
+
+    def arduino_connected(self) -> bool:
+        return _SERIAL_AVAILABLE
+
+    def request_stop(self) -> None:
+        self._stop_flag.set()
+
+    def clear_stop(self) -> None:
+        self._stop_flag.clear()
+
+    def should_stop(self) -> bool:
+        return self._stop_flag.is_set()
+
+    def start_batch(self, session_id: str) -> bool:
+        """Return True if a batch was successfully started (not already running)."""
+        with self._batch_lock:
+            if self._batch_running:
+                return False
+            self._stop_flag.clear()
+            self._batch_running = True
+            self.active_session_id = session_id
+            self._batch_thread = None
+            return True
+
+    def attach_thread(self, thread: threading.Thread) -> None:
+        with self._batch_lock:
+            self._batch_thread = thread
+
+    def end_batch(self) -> None:
+        with self._batch_lock:
+            self._batch_running = False
+            self.active_session_id = None
+            self._batch_thread = None
+            self._stop_flag.clear()
+
+    def wait_until_idle(self, timeout: float = STOP_WAIT_SECONDS) -> bool:
+        with self._batch_lock:
+            thread = self._batch_thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=timeout)
+        with self._batch_lock:
+            idle = not self._batch_running
+            if idle:
+                self._stop_flag.clear()
+            return idle
+
+    @property
+    def is_running(self) -> bool:
+        with self._batch_lock:
+            return self._batch_running
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._batch_lock:
+            return {
+                "batch_running": self._batch_running,
+                "active_session_id": self.active_session_id,
+                "stop_requested": self._stop_flag.is_set(),
+            }
 
 
 STATE = ScannerState()
-OUT_DIR = Path(__file__).resolve().parent / 'scans'
-OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# ── WIA scanning ──────────────────────────────────────────────────────────────
+
+def scan_sheet_wia() -> "Image.Image":
+    """Trigger WIA scan on the ES-50 and return a PIL Image (grayscale, 300 DPI)."""
+    if not _WIA_AVAILABLE or not _PIL_AVAILABLE:
+        raise RuntimeError("WIA (pywin32) or PIL not available.")
+
+    wia = win32com.client.Dispatch("WIA.CommonDialog")
+    device_manager = win32com.client.Dispatch("WIA.DeviceManager")
+
+    # Auto-select first available scanner device
+    device = None
+    for info in device_manager.DeviceInfos:
+        if info.Type == 1:  # ScannerDeviceType
+            device = info.Connect()
+            break
+
+    if device is None:
+        raise RuntimeError("No WIA scanner device found.")
+
+    item = device.Items[1]
+    # 300 DPI, grayscale
+    item.Properties["Horizontal Resolution"].Value = 300
+    item.Properties["Vertical Resolution"].Value   = 300
+    item.Properties["Current Intent"].Value        = 4  # grayscale
+    for prop_name, value in (
+        ("Horizontal Start Position", 0),
+        ("Vertical Start Position", 0),
+        ("Horizontal Extent", omr.CANON_W),
+        ("Vertical Extent", omr.CANON_H),
+    ):
+        try:
+            item.Properties[prop_name].Value = value
+        except Exception as exc:
+            logger.debug("WIA property %s=%s was ignored: %s", prop_name, value, exc)
+
+    image_file = item.Transfer("{B96B3CAB-0728-11D3-9D7B-0000F81EF32E}")  # BMP
+    raw = bytes(image_file.FileData.BinaryData)
+    image = Image.open(io.BytesIO(raw))
+    logger.info("WIA returned scan size: %sx%s", image.width, image.height)
+    return image
+
+
+def scan_sheet_mock(sheet_index: int) -> "Image.Image":
+    """Return a blank white image for testing without hardware."""
+    if not _PIL_AVAILABLE:
+        raise RuntimeError("Pillow not available.")
+    return Image.new("L", (850, 1100), color=255)
+
+
+# ── Arduino feeder ────────────────────────────────────────────────────────────
+
+def feed_one_sheet(ser: Any) -> bool:
+    """Send FEED command, wait for SHEET_FED. Returns True on success."""
+    ser.write(b"FEED\n")
+    deadline = time.time() + SERIAL_TIMEOUT
+    while time.time() < deadline:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if line == "SHEET_FED":
+            return True
+        if line == "NO_PAPER":
+            return False
+    return False  # timeout
+
+
+# ── Post sheet result to PHP API ──────────────────────────────────────────────
+
+def post_sheet_to_api(session_id: str, result_dict: dict) -> None:
+    if not _REQUESTS_AVAILABLE:
+        logger.warning("requests not installed — cannot post sheet to API")
+        return
+    url = f"{PHP_API_BASE}/scan/session/{session_id}/sheet"
+    try:
+        resp = _requests.post(url, json=result_dict, timeout=10)
+        if not resp.ok:
+            logger.warning("API rejected sheet: %s", resp.text[:200])
+    except Exception as exc:
+        logger.warning("post_sheet_to_api failed: %s", exc)
+
+
+# ── Batch scan loop ───────────────────────────────────────────────────────────
+
+def _batch_loop(session_id: str, use_hardware: bool) -> None:
+    """
+    Background thread: feed + scan + post loop.
+    Stops on: stop flag, no-paper timeout, or MAX_UNREADABLE consecutive failures.
+    """
+    if pythoncom is not None:
+        pythoncom.CoInitialize()
+    try:
+        sheet_index     = 0
+        consecutive_bad = 0
+        ser             = None
+
+        if use_hardware and _SERIAL_AVAILABLE:
+            try:
+                ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_TIMEOUT)
+                time.sleep(2)  # wait for Arduino to boot
+            except Exception as exc:
+                logger.warning("Could not open serial port %s: %s", SERIAL_PORT, exc)
+                ser = None
+
+        while not STATE.should_stop():
+            sheet_index += 1
+
+            # 1. Feed one sheet (Arduino or no-op in mock mode)
+            if ser is not None:
+                paper_ok = feed_one_sheet(ser)
+                if not paper_ok:
+                    logger.info("No paper in feeder — stopping batch.")
+                    break
+            else:
+                time.sleep(0.2)  # simulate feed delay in mock mode
+
+            # 2. Scan
+            try:
+                if use_hardware and _WIA_AVAILABLE and _PIL_AVAILABLE:
+                    pil_image = scan_sheet_wia()
+                else:
+                    pil_image = scan_sheet_mock(sheet_index)
+            except Exception as exc:
+                exc_str = str(exc)
+                # WIA paper-empty: treat as clean end-of-batch, not an error
+                if "-2145320957" in exc_str or "no documents" in exc_str.lower() or "paper empty" in exc_str.lower():
+                    logger.info("ADF empty after sheet %d — batch complete.", sheet_index - 1)
+                    break
+                logger.warning("Scan failed: %s", exc)
+                result_dict = {
+                    "sheet_index":  sheet_index,
+                    "student_code": None,
+                    "exam_code":    None,
+                    "raw_answers":  "",
+                    "score":        0,
+                    "max_score":    0,
+                    "status":       "flagged",
+                    "flag_reasons": ["SCAN_ERROR"],
+                    "scan_image":   "",
+                }
+                post_sheet_to_api(session_id, result_dict)
+                consecutive_bad += 1
+                if consecutive_bad >= MAX_UNREADABLE:
+                    logger.error("Too many scan failures — aborting batch.")
+                    break
+                continue
+
+            # 3. OMR processing
+            try:
+                result = omr.process_sheet(pil_image, sheet_index, PHP_API_BASE)
+                result_dict = omr.sheet_result_to_dict(result)
+                consecutive_bad = 0 if result.status == "ok" else consecutive_bad + 1
+            except Exception as exc:
+                logger.warning("OMR processing failed: %s", exc)
+                result_dict = {
+                    "sheet_index":  sheet_index,
+                    "student_code": None,
+                    "exam_code":    None,
+                    "raw_answers":  "",
+                    "score":        0,
+                    "max_score":    0,
+                    "status":       "flagged",
+                    "flag_reasons": ["UNREADABLE"],
+                    "scan_image":   "",
+                }
+                consecutive_bad += 1
+
+            # 4. Save debug scan file
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_path = OUT_DIR / f"session_{session_id[:8]}_{sheet_index}_{ts}.json"
+            debug_path.write_text(json.dumps(result_dict, indent=2), encoding="utf-8")
+
+            # 5. Post to PHP API
+            post_sheet_to_api(session_id, result_dict)
+
+            STATE.last_scan_at = datetime.now().isoformat()
+            STATE.last_output  = str(debug_path)
+
+            # 6. Safety cutoff
+            if consecutive_bad >= MAX_UNREADABLE:
+                logger.error("Too many unreadable sheets — aborting batch.")
+                break
+
+            time.sleep(INTER_SHEET_DELAY)
+
+    finally:
+        if ser is not None:
+            ser.close()
+        STATE.end_batch()
+        logger.info("Batch scan finished. session=%s", session_id)
+        if pythoncom is not None:
+            pythoncom.CoUninitialize()
+
+
+# ── HTTP handler ──────────────────────────────────────────────────────────────
 
 def json_bytes(payload: dict) -> bytes:
-    return json.dumps(payload).encode('utf-8')
+    return json.dumps(payload).encode("utf-8")
 
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload: dict) -> None:
         body = json_bytes(payload)
         self.send_response(code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path == '/status':
-            self._send(
-                200,
-                {
-                    'ok': True,
-                    'data': {
-                        'scanner': {
-                            'connected': STATE.scanner_connected(),
-                            'driver': 'pyserial+wia-stub',
-                            'last_scan_at': STATE.last_scan_at,
-                            'last_output': STATE.last_output,
-                        }
-                    },
-                },
-            )
-            return
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            return json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            return {}
 
-        self._send(404, {'ok': False, 'error': 'Route not found'})
+    def log_message(self, fmt: str, *args: Any) -> None:  # quieter logs
+        logger.debug(fmt, *args)
+
+    # ── GET ────────────────────────────────────────────────────────────────────
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/status":
+            state_snapshot = STATE.snapshot()
+            self._send(200, {
+                "ok": True,
+                "data": {
+                    "scanner": {
+                        "connected":      STATE.scanner_connected(),
+                        "arduino":        STATE.arduino_connected(),
+                        "batch_running":  state_snapshot["batch_running"],
+                        "active_session_id": state_snapshot["active_session_id"],
+                        "stop_requested": state_snapshot["stop_requested"],
+                        "driver":         "wia+arduino",
+                        "last_scan_at":   STATE.last_scan_at,
+                        "last_output":    STATE.last_output,
+                    }
+                },
+            })
+            return
+        self._send(404, {"ok": False, "error": "Route not found"})
+
+    # ── POST ───────────────────────────────────────────────────────────────────
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != '/scan':
-            self._send(404, {'ok': False, 'error': 'Route not found'})
-            return
+        path = self.path.split("?")[0]
 
-        content_length = int(self.headers.get('Content-Length', '0'))
-        raw = self.rfile.read(content_length) if content_length > 0 else b'{}'
-        payload = json.loads(raw.decode('utf-8') or '{}')
+        # ── Legacy single scan ─────────────────────────────────────────────────
+        if path == "/scan":
+            payload = self._read_json()
+            exam_id = int(payload.get("exam_id", 0))
+            if exam_id < 1:
+                self._send(400, {"ok": False, "error": "exam_id is required"})
+                return
 
-        exam_id = int(payload.get('exam_id', 0))
-        if exam_id < 1:
-            self._send(400, {'ok': False, 'error': 'exam_id is required'})
-            return
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = OUT_DIR / f"exam_{exam_id}_{ts}.txt"
+            output_path.write_text(
+                f"MOCK_SCAN exam_id={exam_id} at {ts}\n", encoding="utf-8"
+            )
+            STATE.last_scan_at = datetime.now().isoformat()
+            STATE.last_output  = str(output_path)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_path = OUT_DIR / f'exam_{exam_id}_{timestamp}.txt'
-
-        # Placeholder for actual WIA image capture and pyserial trigger logic.
-        output_path.write_text(f'MOCK_SCAN exam_id={exam_id} at {timestamp}\n', encoding='utf-8')
-
-        STATE.last_scan_at = datetime.now().isoformat()
-        STATE.last_output = str(output_path)
-
-        self._send(
-            200,
-            {
-                'ok': True,
-                'data': {
-                    'exam_id': exam_id,
-                    'file_path': str(output_path),
-                    'detected_sheets': random.randint(1, 3),
+            self._send(200, {
+                "ok": True,
+                "data": {
+                    "exam_id":          exam_id,
+                    "file_path":        str(output_path),
+                    "detected_sheets":  1,
                 },
-            },
-        )
+            })
+            return
 
+        # ── Start batch scan ───────────────────────────────────────────────────
+        if path == "/batch-scan":
+            payload    = self._read_json()
+            session_id = str(payload.get("session_id", "")).strip()
+            if not session_id:
+                self._send(400, {"ok": False, "error": "session_id is required"})
+                return
+
+            if not STATE.start_batch(session_id):
+                self._send(409, {"ok": False, "error": "A batch scan is already running"})
+                return
+
+            use_hw = _WIA_AVAILABLE and _SERIAL_AVAILABLE
+            t = threading.Thread(
+                target=_batch_loop,
+                args=(session_id, use_hw),
+                daemon=True,
+            )
+            STATE.attach_thread(t)
+            t.start()
+
+            self._send(200, {"ok": True, "data": {
+                "session_id":   session_id,
+                "hardware_mode": use_hw,
+            }})
+            return
+
+        # ── Stop batch scan ────────────────────────────────────────────────────
+        if path == "/batch-stop":
+            payload = self._read_json()
+            session_id = str(payload.get("session_id", "")).strip()
+            wait = bool(payload.get("wait", True))
+            state_snapshot = STATE.snapshot()
+            if (
+                session_id
+                and state_snapshot["active_session_id"]
+                and session_id != state_snapshot["active_session_id"]
+            ):
+                self._send(409, {"ok": False, "error": "Another batch session is active", "data": state_snapshot})
+                return
+
+            STATE.request_stop()
+            idle = STATE.wait_until_idle() if wait else not STATE.is_running
+            state_snapshot = STATE.snapshot()
+            self._send(200, {"ok": True, "data": {
+                "idle": idle,
+                "batch_running": state_snapshot["batch_running"],
+                "active_session_id": state_snapshot["active_session_id"],
+                "stop_requested": state_snapshot["stop_requested"],
+            }})
+            return
+
+        self._send(404, {"ok": False, "error": "Route not found"})
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    host = '127.0.0.1'
+    host = "127.0.0.1"
     port = 5001
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f'Scanner service running at http://{host}:{port}')
+    logger.info("Scanner service running at http://%s:%d", host, port)
     server.serve_forever()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

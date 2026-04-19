@@ -1,6 +1,13 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import ScanReview from './ScanReview'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import * as XLSX from 'xlsx'
+
+const MANUAL_ANSWER_GRID_STYLE = {
+  gridTemplateRows: 'repeat(5, minmax(2.75rem, auto))',
+  gridAutoFlow: 'column',
+  gridAutoColumns: 'minmax(5.75rem, 1fr)',
+}
 
 /* CLASSLIST IMPORT HOOK */
 function withEducatorId(path, educatorId) {
@@ -1043,6 +1050,13 @@ function ActivitiesTab({
                 {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
                 {item.max_score && <span>{item.max_score} pts</span>}
               </div>
+              {item.exam_code && (
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] font-bold tracking-widest text-slate-500">
+                    EXAM CODE: {item.exam_code}
+                  </span>
+                </div>
+              )}
               <div className="mt-2 flex justify-end gap-2">
                 <GhostBtn type="button" onClick={() => onStartEditActivity(item)} disabled={busyAction === `edit-activity-${item.id}`}>
                   <PenIcon />
@@ -1156,10 +1170,12 @@ function AnnouncementsTab({
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
 function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken = '', manualContext = null }) {
-  const [actionMode, setActionMode] = useState('scan')
-  const [selectedStudentCode, setSelectedStudentCode] = useState('')
-  const scannerConnected = Boolean(scan.scanner?.scanner?.connected)
-  const typedStudentCode = String(scan.gradeForm?.student_code || '').trim()
+  const [showManual, setShowManual] = useState(false)
+  const scannerConnected  = Boolean(scan.scanner?.scanner?.connected)
+  const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'review'
+  const stagedSheets      = scan.stagedSheets ?? []
+  const typedStudentCode  = String(scan.gradeForm?.student_code || '').trim()
+
   const matchedStudent = useMemo(() => {
     if (!typedStudentCode) return null
     const needle = typedStudentCode.toUpperCase()
@@ -1169,302 +1185,267 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
     ? formatStudentFullName(matchedStudent.given_name, matchedStudent.middle_name, matchedStudent.surname)
     : ''
 
-  // Build student options for the dropdown
   const studentOptions = useMemo(() => students.map((s) => {
     const fullName = formatStudentFullName(s.given_name, s.middle_name, s.surname)
     return {
       value: s.student_code,
       label: `${s.student_code} — ${fullName}`,
-      // Keep matching predictable: student code + visible name parts only.
       searchText: `${s.student_code} ${fullName} ${s.surname || ''} ${s.given_name || ''}`,
     }
   }), [students])
 
   useEffect(() => {
     if (!manualFocusToken) return
-    setActionMode('manual')
+    setShowManual(true)
   }, [manualFocusToken])
 
   const gradeItems = Array.isArray(scan.gradeAnswerItems) ? scan.gradeAnswerItems : []
-  const answerColumns = useMemo(() => {
-    const total = gradeItems.length
-    if (total <= 10) return 2
-    if (total <= 20) return 4
-    return 5
-  }, [gradeItems.length])
-  const answerRows = useMemo(
-    () => (gradeItems.length > 0 ? Math.ceil(gradeItems.length / answerColumns) : 0),
-    [gradeItems.length, answerColumns]
-  )
-  const answerOrder = useMemo(() => {
-    if (!gradeItems.length || !answerRows) return []
-    const ordered = []
-    for (let row = 0; row < answerRows; row += 1) {
-      for (let col = 0; col < answerColumns; col += 1) {
-        const idx = col * answerRows + row
-        if (idx < gradeItems.length) ordered.push(idx)
-      }
-    }
-    return ordered
-  }, [gradeItems.length, answerRows, answerColumns])
   const answerInputRefs = useRef([])
 
+  // ── Scanning mode ────────────────────────────────────────────────────────────
+  if (sessionStatus === 'scanning') {
+    const okCount      = stagedSheets.filter((s) => s.status === 'ok').length
+    const flaggedCount = stagedSheets.filter((s) => s.status === 'flagged').length
+    const lastSheet    = stagedSheets[stagedSheets.length - 1] ?? null
+
+    return (
+      <div className="min-h-[520px] p-6 flex flex-col gap-5">
+        {scan.error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rosese-700">{scan.error}</div>
+        )}
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 flex flex-col gap-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-white animate-pulse">
+              <ScanIcon />
+            </span>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Scanning in progress…</h3>
+              <p className="text-xs text-slate-500">{stagedSheets.length} sheet{stagedSheets.length !== 1 ? 's' : ''} processed</p>
+            </div>
+          </div>
+
+          {/* Live counts */}
+          <div className="flex flex-wrap gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> OK: {okCount}
+            </span>
+            {flaggedCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" /> Flagged: {flaggedCount}
+              </span>
+            )}
+          </div>
+
+          {/* Last sheet preview */}
+          {lastSheet && (
+            <div className={`scan-last-card rounded-xl border p-3 text-sm ${lastSheet.status === 'ok' ? 'scan-last-card-ok border-emerald-200 bg-emerald-50' : 'scan-last-card-flagged border-amber-200 bg-amber-50'}`}>
+              <span className="scan-last-label text-xs font-bold uppercase tracking-widest text-slate-400 mr-2">Last:</span>
+              <span className="scan-last-name font-semibold text-slate-800">
+                {lastSheet.student_name ?? lastSheet.student_code ?? 'Unknown'}
+              </span>
+              {lastSheet.score != null && (
+                <span className="scan-last-score ml-2 text-slate-600">{lastSheet.score}/{lastSheet.max_score}</span>
+              )}
+              {lastSheet.status === 'flagged' && (
+                <span className="scan-last-flag ml-2 text-amber-700">⚠ {lastSheet.flag_reasons?.[0] ?? 'flagged'}</span>
+              )}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={scan.onStopBatchScan}
+            disabled={scan.busy}
+            className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-rose-300 bg-white px-4 py-3 text-sm font-bold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"
+          >
+            Stop Scanning
+          </button>
+        </section>
+      </div>
+    )
+  }
+
+  // ── Review mode ──────────────────────────────────────────────────────────────
+  if (sessionStatus === 'review') {
+    return (
+      <div className="min-h-[520px] p-6 flex flex-col gap-5">
+        {scan.error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{scan.error}</div>
+        )}
+        <div className="flex items-center gap-2.5 mb-1">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
+            <ScanIcon />
+          </span>
+          <div>
+            <h3 className="text-sm font-bold text-slate-800">Review &amp; Commit</h3>
+            <p className="text-xs text-slate-500">Approve, fix, or discard scanned sheets before committing to gradebook.</p>
+          </div>
+        </div>
+        <ScanReview
+          sessionId={scan.scanSession?.session_id}
+          sheets={stagedSheets}
+          busy={scan.busy}
+          onCommit={scan.onCommitSession}
+          onDiscard={scan.onDiscardSession}
+          onUpdateSheet={scan.onUpdateStagedSheet}
+        />
+      </div>
+    )
+  }
+
+  // ── Idle mode ────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-[520px] p-6">
+    <div className="min-h-[520px] p-6 flex flex-col gap-5">
       {scan.error && (
-        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <div className="mb-1 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {scan.error}
         </div>
       )}
 
-      <div className="grid gap-6">
-        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+      {/* Scanner status pill */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+            <ScanIcon />
+          </span>
+          <h3 className="text-sm font-bold text-slate-800">Scan or Submit</h3>
+        </div>
+        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+          scannerConnected
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-amber-200 bg-amber-50 text-amber-700'
+        }`}>
+          <span className={`h-2 w-2 rounded-full ${scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+          {scannerConnected ? 'Scanner ready' : 'Scanner not connected'}
+        </span>
+      </div>
 
-          {/* ── Section header with INLINE scanner status (banner removed) ── */}
-          <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
-                <ScanIcon />
-              </span>
-              <div>
-                <h3 className="text-sm font-bold text-slate-800">Scan or Submit</h3>
-                <p className="text-xs text-slate-500">Templates are managed in Activities.</p>
+      {/* Batch scan card */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+          <p className="text-xs font-semibold text-slate-700">Batch scan workflow</p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Load answer sheets into the feeder, then start scanning. Each sheet is read, graded,
+            and queued for review. The exam code and student code are read from the bubbled grid.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={scan.onStartBatchScan}
+          disabled={scan.busy || !scannerConnected}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {scan.busy ? <><SpinIcon /> Starting…</> : <><ScanIcon /> Start Batch Scan</>}
+        </button>
+        {!scannerConnected && (
+          <p className="text-xs text-amber-700">Scanner service must be running and connected.</p>
+        )}
+      </section>
+
+      {/* Manual submission toggle */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowManual((v) => !v)}
+          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800 transition"
+        >
+          <span>{showManual ? '▾' : '▸'}</span>
+          Manual Entry {showManual ? '(hide)' : '(show)'}
+        </button>
+      </div>
+
+      {showManual && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5">
+          <form onSubmit={scan.onGrade} className="space-y-3">
+            {manualContext?.activityTitle && manualContext?.studentCode && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
+                Prefilled from gradebook: {manualContext.activityTitle} ({manualContext.studentCode})
               </div>
-            </div>
+            )}
 
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* Inline scanner status pill */}
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
-                  scannerConnected
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                    : 'border-amber-200 bg-amber-50 text-amber-700'
-                }`}
-              >
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
-                  }`}
-                />
-                {scannerConnected ? 'Scanner ready' : 'Not connected'}
-                <span className="ml-1 rounded-full border border-white/70 bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
-                  {scan.scanner?.transport || 'n/a'}
-                </span>
-              </span>
-
-              {/* Mode toggle */}
-              <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-                <button
-                  type="button"
-                  onClick={() => setActionMode('scan')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                    actionMode === 'scan'
-                      ? 'bg-white text-slate-800 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  Scanner Controls
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActionMode('manual')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                    actionMode === 'manual'
-                      ? 'bg-white text-slate-800 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  Manual Submission
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* ── Scanner Controls mode ── */}
-          {actionMode === 'scan' ? (
-            <form onSubmit={scan.onScan} className="space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-semibold text-slate-600">Recommended workflow</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Select a template and student, load paper, then run scan job.
+            {scan.lastResult?.score !== undefined && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-600">Last Result</p>
+                <p className="mt-0.5 text-sm font-bold text-slate-800">
+                  {scan.lastResult.student_code} — {scan.lastResult.score}/{scan.lastResult.total_items}
                 </p>
               </div>
+            )}
 
+            <div className="grid gap-3 md:grid-cols-2">
               <Field label="Exam Template">
                 <BoundedSelect
-                  value={scan.scanRequest?.exam_id || ''}
-                  onChange={(nextValue) => scan.setScanRequest({ exam_id: nextValue })}
+                  value={scan.gradeForm?.exam_id || ''}
+                  onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, exam_id: nextValue }))}
                   placeholder="Select exam template"
                   options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
                 />
               </Field>
-
-              {/* Student selector — from enrolled roster */}
-              <Field label="Student" hint="optional — leave blank for batch scan">
-                <BoundedSelect
-                  value={selectedStudentCode}
-                  onChange={setSelectedStudentCode}
-                  placeholder={
-                    students.length === 0
-                      ? 'No students enrolled'
-                      : 'All enrolled students (batch)'
-                  }
-                  options={studentOptions}
-                  searchable
-                  searchPlaceholder="Search by student code or name"
-                  emptySearchText="No matching students"
-                />
-                {students.length > 0 && (
-                  <p className="mt-1 text-[11px] text-slate-400">
-                    {students.length} student{students.length !== 1 ? 's' : ''} on the class roster
-                  </p>
-                )}
-              </Field>
-
-              <button
-                type="submit"
-                disabled={scan.busy || !scan.scanRequest?.exam_id || !scannerConnected}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {scan.busy ? (
-                  <><SpinIcon /> Running scan...</>
-                ) : (
-                  <><ScanIcon /> Start Scan Job</>
-                )}
-              </button>
-
-              {!scannerConnected && (
-                <p className="text-xs text-amber-700">Scanner is required for this action.</p>
-              )}
-            </form>
-
-          ) : (
-            /* ── Manual Submission mode ── */
-            <form onSubmit={scan.onGrade} className="space-y-3">
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                  <p className="text-xs font-semibold text-emerald-700">Fallback workflow</p>
-                  <p className="mt-1 text-xs text-emerald-700/80">
-                    Use this when scanner is unavailable or for corrections.
-                  </p>
-                  {manualContext?.activityTitle && manualContext?.studentCode && (
-                    <p className="mt-1 text-xs font-semibold text-emerald-700">
-                      Prefilled from gradebook: {manualContext.activityTitle} ({manualContext.studentCode})
-                    </p>
-                  )}
-                </div>
-
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                  <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-600">Checked Result</p>
-                  {scan.lastResult && scan.lastResult.score !== undefined && scan.lastResult.total_items !== undefined ? (
-                    <>
-                      <p className="mt-1 text-sm font-bold text-slate-800">
-                        {scan.lastResult.student_code} - {scan.lastResult.score}/{scan.lastResult.total_items}
-                      </p>
-                      <p className="mt-0.5 text-xs text-slate-600">{scan.lastResult.exam_title}</p>
-                    </>
-                  ) : (
-                    <p className="mt-1 text-xs text-slate-600">No checked result yet.</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label="Exam Template">
+              <Field label="Student Code">
+                {students.length > 0 ? (
                   <BoundedSelect
-                    value={scan.gradeForm?.exam_id || ''}
-                    onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, exam_id: nextValue }))}
-                    placeholder="Select exam template"
-                    options={templates.map((ex) => ({ value: ex.id, label: ex.title }))}
+                    value={scan.gradeForm?.student_code || ''}
+                    onChange={(nextValue) => scan.setGradeForm((p) => ({ ...p, student_code: nextValue }))}
+                    placeholder="Select student"
+                    options={studentOptions}
+                    searchable
+                    searchPlaceholder="Search by code or name"
+                    emptySearchText="No matching students"
                   />
-                </Field>
-
-                {/* Student: dropdown from roster if enrolled, otherwise free-text */}
-                <Field label="Student">
-                  {students.length > 0 ? (
-                    <BoundedSelect
-                      value={scan.gradeForm?.student_code || ''}
-                      onChange={(nextValue) =>
-                        scan.setGradeForm((p) => ({ ...p, student_code: nextValue }))
-                      }
-                      placeholder="Select student from roster"
-                      options={studentOptions}
-                      searchable
-                      searchPlaceholder="Search by student code or name"
-                      emptySearchText="No matching students"
-                    />
-                  ) : (
-                    <TextInput
-                      required
-                      value={scan.gradeForm?.student_code || ''}
-                      onChange={(e) =>
-                        scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))
-                      }
-                      placeholder="2021-00001"
-                    />
-                  )}
-                  {!!typedStudentCode && (
-                    <p className={`mt-1 text-xs ${matchedStudent ? 'text-emerald-700' : 'text-amber-700'}`}>
-                      {matchedStudent
-                        ? `${typedStudentCode} — ${matchedStudentName}`
-                        : `${typedStudentCode} — No matching student found in class roster`}
-                    </p>
-                  )}
-                </Field>
-              </div>
-
-              <Field label="Answers">
-                {gradeItems.length > 0 ? (
-                  <div
-                    className="grid gap-2"
-                    style={{ gridTemplateColumns: `repeat(${answerColumns}, minmax(0, 1fr))` }}
-                  >
-                    {answerOrder.map((idx) => (
-                      <div key={`answer-item-${idx}`} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
-                        <span className="w-7 text-right font-mono text-xs font-semibold text-slate-500">{idx + 1}.</span>
-                        <input
-                          required
-                          ref={(el) => { answerInputRefs.current[idx] = el }}
-                          value={gradeItems[idx] || ''}
-                          onChange={(e) => {
-                            const nextValue = String(e.target.value || '')
-                              .toUpperCase()
-                              .replace(/[^A-E/]/g, '')
-                              .replace(/\/{2,}/g, '/')
-                              .replace(/^\/+/, '')
-                              .replace(/\/+$/, '')
-                            scan.onSetGradeAnswerItem?.(idx, nextValue)
-                            if (/^[A-E]$/.test(nextValue) && idx + 1 < gradeItems.length) {
-                              requestAnimationFrame(() => {
-                                const nextInput = answerInputRefs.current[idx + 1]
-                                if (nextInput) {
-                                  nextInput.focus()
-                                  nextInput.select()
-                                }
-                              })
-                            }
-                          }}
-                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-mono text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-                          placeholder="A"
-                        />
-                      </div>
-                    ))}
-                  </div>
                 ) : (
-                  <p className="text-xs text-slate-400">Select an exam template to load answer items.</p>
+                  <TextInput
+                    required
+                    value={scan.gradeForm?.student_code || ''}
+                    onChange={(e) => scan.setGradeForm((p) => ({ ...p, student_code: e.target.value }))}
+                    placeholder="000001"
+                    maxLength={6}
+                  />
+                )}
+                {!!typedStudentCode && (
+                  <p className={`mt-1 text-xs ${matchedStudent ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {matchedStudent ? `${matchedStudentName}` : 'Not found in class roster'}
+                  </p>
                 )}
               </Field>
+            </div>
 
-              <SubmitBtn
-                disabled={scan.busy || !scan.gradeForm?.exam_id}
-                colorClass="bg-emerald-600 hover:bg-emerald-700"
-              >
-                {scan.busy ? <><SpinIcon /> Grading...</> : 'Grade Submission'}
-              </SubmitBtn>
-            </form>
-          )}
+            <Field label="Answers">
+              {gradeItems.length > 0 ? (
+                <div className="grid gap-1.5 overflow-x-auto pb-1" style={MANUAL_ANSWER_GRID_STYLE}>
+                  {gradeItems.map((answer, idx) => (
+                    <div key={`answer-item-${idx}`} className="flex min-w-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-1.5 py-2">
+                      <span className="w-6 shrink-0 text-right font-mono text-xs font-semibold text-slate-500">{idx + 1}.</span>
+                      <input
+                        required
+                        ref={(el) => { answerInputRefs.current[idx] = el }}
+                        value={answer || ''}
+                        onChange={(e) => {
+                          const nextValue = String(e.target.value || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1)
+                          scan.onSetGradeAnswerItem?.(idx, nextValue)
+                          if (/^[A-Z]$/.test(nextValue) && idx + 1 < gradeItems.length) {
+                            requestAnimationFrame(() => {
+                              const next = answerInputRefs.current[idx + 1]
+                              if (next) { next.focus(); next.select() }
+                            })
+                          }
+                        }}
+                        className="w-full min-w-0 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-xs font-mono text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                        placeholder="A"
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">Select an exam template to load answer items.</p>
+              )}
+            </Field>
+
+            <SubmitBtn disabled={scan.busy || !scan.gradeForm?.exam_id} colorClass="bg-emerald-600 hover:bg-emerald-700">
+              {scan.busy ? <><SpinIcon /> Grading…</> : 'Grade Submission'}
+            </SubmitBtn>
+          </form>
         </section>
-      </div>
+      )}
     </div>
   )
 }

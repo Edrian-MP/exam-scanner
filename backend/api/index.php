@@ -28,11 +28,8 @@ $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 function normalize_answer_token(string $token): string
 {
     $upper = strtoupper(trim($token));
-    $upper = preg_replace('/\s+/', '', $upper) ?? '';
-    $upper = preg_replace('/[^A-Z\/]/', '', $upper) ?? '';
-    $upper = preg_replace('/\/+/', '/', $upper) ?? '';
-    $upper = trim($upper, '/');
-    return $upper;
+    $upper = preg_replace('/[^A-Z]/', '', $upper) ?? '';
+    return substr($upper, 0, 1);
 }
 
 function parse_answers_input(string $raw): array
@@ -42,33 +39,11 @@ function parse_answers_input(string $raw): array
         return [];
     }
 
-    $hasLineBreaks = str_contains($raw, "\n") || str_contains($raw, "\r");
-    if ($hasLineBreaks) {
-        $lines = preg_split('/\R+/', $raw) ?: [];
-        $items = [];
-        foreach ($lines as $line) {
-            $line = preg_replace('/^\s*\d+\s*[.)-]?\s*/', '', trim($line)) ?? '';
-            $token = normalize_answer_token($line);
-            if ($token !== '') {
-                $items[] = $token;
-            }
-        }
-        return $items;
-    }
-
-    $normalized = normalize_answer_token($raw);
-    if ($normalized === '') {
-        return [];
-    }
-
-    if (!str_contains($normalized, '/')) {
-        return str_split($normalized);
-    }
-
-    $parts = preg_split('/[|,\s;]+/', $raw) ?: [];
+    $lines = preg_split('/[\r\n|]+/', $raw) ?: [];
     $items = [];
-    foreach ($parts as $part) {
-        $token = normalize_answer_token($part);
+    foreach ($lines as $line) {
+        $line = preg_replace('/^\s*\d+\s*[.)-]?\s*/', '', trim($line)) ?? '';
+        $token = normalize_answer_token($line);
         if ($token !== '') {
             $items[] = $token;
         }
@@ -78,12 +53,137 @@ function parse_answers_input(string $raw): array
 
 function is_valid_answer_token(string $token): bool
 {
-    return (bool) preg_match('/^[A-Z](\/[A-Z])+$/', $token) || (bool) preg_match('/^[A-Z]$/', $token);
+    return (bool) preg_match('/^[A-Z]$/', $token);
+}
+
+function generate_unique_exam_code(): ?string
+{
+    for ($attempt = 0; $attempt < 10; $attempt++) {
+        $code = str_pad((string) random_int(1, 999999), 6, '0', STR_PAD_LEFT);
+        $exists = db()->prepare('SELECT id FROM subject_activities WHERE exam_code = :code LIMIT 1');
+        $exists->execute([':code' => $code]);
+        if (!$exists->fetch()) {
+            return $code;
+        }
+    }
+    return null;
 }
 
 function normalize_answers_for_store(array $items): string
 {
     return implode('|', $items);
+}
+
+function ensure_student_code_schema(): void
+{
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    try {
+        $colInfo = db()->query(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME   = 'students'
+               AND COLUMN_NAME  = 'student_code'
+             LIMIT 1"
+        )->fetch();
+
+        if (!$colInfo) {
+            return;
+        }
+
+        $currentType = strtolower((string) ($colInfo['COLUMN_TYPE'] ?? ''));
+        if ($currentType === 'char(6)') {
+            return;
+        }
+
+        // Only alter if every existing code is already 6-digit numeric
+        $bad = db()->query(
+            "SELECT COUNT(*) AS c FROM students WHERE student_code NOT REGEXP '^[0-9]{6}$'"
+        )->fetch();
+
+        if ((int) ($bad['c'] ?? 1) > 0) {
+            return; // run migrate_student_codes.php first
+        }
+
+        db()->exec('ALTER TABLE students MODIFY COLUMN student_code CHAR(6) NOT NULL');
+
+        $ckExists = db()->query(
+            "SELECT CONSTRAINT_NAME
+             FROM information_schema.TABLE_CONSTRAINTS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME   = 'students'
+               AND CONSTRAINT_NAME = 'chk_student_code'
+             LIMIT 1"
+        )->fetch();
+        if (!$ckExists) {
+            db()->exec(
+                "ALTER TABLE students
+                 ADD CONSTRAINT chk_student_code
+                 CHECK (student_code REGEXP '^[0-9]{6}$')"
+            );
+        }
+    } catch (Throwable $e) {
+        // Keep API usable even if schema changes are blocked.
+    }
+}
+
+function ensure_exam_code_column(): void
+{
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    try {
+        $colExists = db()->query("SHOW COLUMNS FROM subject_activities LIKE 'exam_code'")->fetch();
+        if (!$colExists) {
+            db()->exec('ALTER TABLE subject_activities ADD COLUMN exam_code CHAR(6) NULL');
+            $idxExists = db()->query(
+                "SHOW INDEX FROM subject_activities WHERE Key_name = 'uq_exam_code'"
+            )->fetch();
+            if (!$idxExists) {
+                db()->exec('ALTER TABLE subject_activities ADD UNIQUE KEY uq_exam_code (exam_code)');
+            }
+        }
+    } catch (Throwable $e) {
+        // Keep API usable even if schema changes are blocked.
+    }
+}
+
+function ensure_scan_staging_schema(): void
+{
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+    $checked = true;
+
+    try {
+        db()->exec(
+            "CREATE TABLE IF NOT EXISTS scan_staging (
+                id           INT AUTO_INCREMENT PRIMARY KEY,
+                session_id   VARCHAR(36) NOT NULL,
+                sheet_index  INT NOT NULL,
+                student_code CHAR(6) NULL,
+                exam_code    CHAR(6) NULL,
+                raw_answers  VARCHAR(120) NULL,
+                score        INT NULL,
+                max_score    INT NULL,
+                status       ENUM('ok','flagged') NOT NULL DEFAULT 'ok',
+                flag_reasons TEXT NULL,
+                scan_image   MEDIUMTEXT NULL,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_session (session_id)
+            )"
+        );
+    } catch (Throwable $e) {
+        // Keep API usable even if schema changes are blocked.
+    }
 }
 
 function ensure_submissions_exam_title_column(): void
@@ -373,6 +473,9 @@ function find_subject_or_404(int $subjectId, int $educatorId): array
 ensure_submissions_exam_title_column();
 ensure_educators_schema();
 ensure_lms_schema();
+ensure_student_code_schema();
+ensure_exam_code_column();
+ensure_scan_staging_schema();
 
 if ($path === '/auth/account' && $method === 'GET') {
     $educatorId = (int) ($_GET['educator_id'] ?? 0);
@@ -668,7 +771,7 @@ if ($path === '/exams' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     }
     foreach ($keyItems as $token) {
         if (!is_valid_answer_token($token)) {
-            json_response(400, ['ok' => false, 'error' => 'Invalid answer_key format. Use A or A/B per item.']);
+            json_response(400, ['ok' => false, 'error' => 'Invalid answer_key format. Use a single letter (A–D) per item.']);
         }
     }
 
@@ -720,18 +823,14 @@ if ($path === '/grade/submit') {
 
     foreach ($answerItems as $token) {
         if (!is_valid_answer_token($token)) {
-            json_response(400, ['ok' => false, 'error' => 'Invalid answers format. Use A or A/B per item.']);
+            json_response(400, ['ok' => false, 'error' => 'Invalid answers format. Use a single letter (A–D) per item.']);
         }
     }
 
     $score = 0;
 
     for ($i = 0; $i < $total; $i++) {
-        $student = $answerItems[$i] ?? '';
-        $correct = $keyItems[$i] ?? '';
-        $studentOptions = array_filter(explode('/', $student));
-        $correctOptions = array_filter(explode('/', $correct));
-        if (count(array_intersect($studentOptions, $correctOptions)) > 0) {
+        if (($answerItems[$i] ?? '') === ($keyItems[$i] ?? '')) {
             $score++;
         }
     }
@@ -1015,14 +1114,14 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
-            'SELECT a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.max_score, a.due_at, a.publish_status, a.created_at,
+            'SELECT a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.publish_status, a.created_at,
                     e.title AS exam_title,
                     COUNT(DISTINCT CASE WHEN sub.id IS NOT NULL THEN sub.id END) AS submission_count
              FROM subject_activities a
              LEFT JOIN exams e ON e.id = a.exam_id
              LEFT JOIN submissions sub ON sub.exam_id = a.exam_id
              WHERE a.subject_id = :subject_id
-             GROUP BY a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.max_score, a.due_at, a.publish_status, a.created_at, e.title
+             GROUP BY a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.publish_status, a.created_at, e.title
              ORDER BY COALESCE(a.due_at, a.created_at) DESC'
         );
         $stmt->execute([':subject_id' => $subjectId]);
@@ -1080,7 +1179,14 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
             ':publish_status' => $publishStatus,
         ]);
 
-        json_response(201, ['ok' => true, 'data' => ['id' => (int) db()->lastInsertId()]]);
+        $newActivityId = (int) db()->lastInsertId();
+        $examCode = generate_unique_exam_code();
+        if ($examCode !== null) {
+            $setCode = db()->prepare('UPDATE subject_activities SET exam_code = :code WHERE id = :id');
+            $setCode->execute([':code' => $examCode, ':id' => $newActivityId]);
+        }
+
+        json_response(201, ['ok' => true, 'data' => ['id' => $newActivityId, 'exam_code' => $examCode]]);
     }
 }
 
@@ -1433,6 +1539,283 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
             'published_activities' => $publishedActivities,
         ],
     ]);
+}
+
+/* ═══════════════════════════════════════════════════════
+   EXAM CODE LOOKUP  (used by OMR service)
+═══════════════════════════════════════════════════════ */
+
+if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 'GET') {
+    $code = $matches[1];
+
+    $stmt = db()->prepare(
+        'SELECT a.id AS activity_id, a.title AS activity_title, a.exam_id, a.subject_id,
+                e.answer_key, e.total_items
+         FROM subject_activities a
+         INNER JOIN exams e ON e.id = a.exam_id
+         WHERE a.exam_code = :code
+         LIMIT 1'
+    );
+    $stmt->execute([':code' => $code]);
+    $row = $stmt->fetch();
+
+    if (!$row) {
+        json_response(404, ['ok' => false, 'error' => 'Exam code not found']);
+    }
+
+    $answerKey = parse_answers_input(strtoupper((string) ($row['answer_key'] ?? '')));
+
+    json_response(200, ['ok' => true, 'data' => [
+        'activity_id'    => (int) $row['activity_id'],
+        'activity_title' => (string) $row['activity_title'],
+        'exam_id'        => (int) $row['exam_id'],
+        'answer_key'     => $answerKey,
+        'total_items'    => (int) $row['total_items'],
+        'subject_id'     => (int) $row['subject_id'],
+    ]]);
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCANNER BATCH PROXY  (forwards to Python service)
+═══════════════════════════════════════════════════════ */
+
+if ($path === '/scanner/batch-scan' && $method === 'POST') {
+    $payload = request_json();
+    $result  = scanner_request('/batch-scan', 'POST', $payload);
+    json_response($result['ok'] ?? false ? 200 : 502, $result);
+}
+
+if ($path === '/scanner/batch-stop' && $method === 'POST') {
+    $payload = request_json();
+    $result = scanner_request('/batch-stop', 'POST', $payload);
+    json_response($result['ok'] ?? false ? 200 : 502, $result);
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCAN SESSION ENDPOINTS
+═══════════════════════════════════════════════════════ */
+
+if ($path === '/scan/session/start' && $method === 'POST') {
+    $sessionId = sprintf(
+        '%s-%s-%s-%s-%s',
+        bin2hex(random_bytes(4)),
+        bin2hex(random_bytes(2)),
+        bin2hex(random_bytes(2)),
+        bin2hex(random_bytes(2)),
+        bin2hex(random_bytes(6))
+    );
+    json_response(200, ['ok' => true, 'data' => ['session_id' => $sessionId]]);
+}
+
+if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $method === 'POST') {
+    $sessionId   = $matches[1];
+    $payload     = request_json();
+
+    $sheetIndex  = (int) ($payload['sheet_index'] ?? 0);
+    $studentCode = isset($payload['student_code']) && $payload['student_code'] !== null
+        ? (string) $payload['student_code'] : null;
+    $examCode    = isset($payload['exam_code']) && $payload['exam_code'] !== null
+        ? (string) $payload['exam_code'] : null;
+    $rawAnswers  = isset($payload['raw_answers']) ? (string) $payload['raw_answers'] : null;
+    $score       = isset($payload['score']) ? (int) $payload['score'] : null;
+    $maxScore    = isset($payload['max_score']) ? (int) $payload['max_score'] : null;
+    $status      = in_array($payload['status'] ?? '', ['ok', 'flagged'], true)
+        ? (string) $payload['status'] : 'flagged';
+    $flagReasons = isset($payload['flag_reasons']) && is_array($payload['flag_reasons'])
+        ? json_encode($payload['flag_reasons']) : null;
+    $scanImage   = isset($payload['scan_image']) ? (string) $payload['scan_image'] : null;
+
+    $ins = db()->prepare(
+        'INSERT INTO scan_staging
+            (session_id, sheet_index, student_code, exam_code, raw_answers,
+             score, max_score, status, flag_reasons, scan_image)
+         VALUES
+            (:session_id, :sheet_index, :student_code, :exam_code, :raw_answers,
+             :score, :max_score, :status, :flag_reasons, :scan_image)'
+    );
+    $ins->execute([
+        ':session_id'   => $sessionId,
+        ':sheet_index'  => $sheetIndex,
+        ':student_code' => $studentCode,
+        ':exam_code'    => $examCode,
+        ':raw_answers'  => $rawAnswers,
+        ':score'        => $score,
+        ':max_score'    => $maxScore,
+        ':status'       => $status,
+        ':flag_reasons' => $flagReasons,
+        ':scan_image'   => $scanImage,
+    ]);
+
+    json_response(200, ['ok' => true]);
+}
+
+if (preg_match('#^/scan/session/([a-f0-9\-]+)/results$#', $path, $matches) && $method === 'GET') {
+    $sessionId = $matches[1];
+
+    $stmt = db()->prepare(
+        'SELECT ss.id, ss.sheet_index, ss.student_code, ss.exam_code,
+                ss.raw_answers, ss.score, ss.max_score, ss.status,
+                ss.flag_reasons, ss.scan_image, ss.created_at,
+                st.surname, st.given_name, st.middle_name,
+                a.title AS activity_title
+         FROM scan_staging ss
+         LEFT JOIN students st ON st.student_code = ss.student_code
+         LEFT JOIN subject_activities a ON a.exam_code = ss.exam_code
+         WHERE ss.session_id = :session_id
+         ORDER BY ss.sheet_index ASC'
+    );
+    $stmt->execute([':session_id' => $sessionId]);
+    $rows = $stmt->fetchAll();
+
+    $sheets = array_map(static function (array $row): array {
+        $rawAnswers  = (string) ($row['raw_answers'] ?? '');
+        $answerArray = $rawAnswers !== '' ? explode('|', $rawAnswers) : [];
+
+        $flagReasons = [];
+        $frJson = (string) ($row['flag_reasons'] ?? '');
+        if ($frJson !== '') {
+            $decoded = json_decode($frJson, true);
+            if (is_array($decoded)) {
+                $flagReasons = $decoded;
+            }
+        }
+
+        $studentName = null;
+        if ($row['surname'] !== null) {
+            $given  = trim((string) ($row['given_name']  ?? ''));
+            $middle = trim((string) ($row['middle_name'] ?? ''));
+            $sur    = trim((string) ($row['surname']     ?? ''));
+            $mi     = $middle ? $middle[0] . '.' : '';
+            $studentName = implode(' ', array_filter([$given, $mi, $sur])) ?: $sur;
+        }
+
+        return [
+            'id'             => (int) $row['id'],
+            'sheet_index'    => (int) $row['sheet_index'],
+            'student_code'   => $row['student_code'],
+            'student_name'   => $studentName,
+            'exam_code'      => $row['exam_code'],
+            'activity_title' => $row['activity_title'],
+            'raw_answers'    => $answerArray,
+            'score'          => $row['score']    !== null ? (int) $row['score']    : null,
+            'max_score'      => $row['max_score'] !== null ? (int) $row['max_score'] : null,
+            'status'         => (string) $row['status'],
+            'flag_reasons'   => $flagReasons,
+            'scan_image'     => $row['scan_image'],
+        ];
+    }, $rows);
+
+    $total        = count($sheets);
+    $okCount      = count(array_filter($sheets, static fn($s) => $s['status'] === 'ok'));
+    $flaggedCount = $total - $okCount;
+
+    json_response(200, ['ok' => true, 'data' => [
+        'sheets'        => $sheets,
+        'total'         => $total,
+        'ok_count'      => $okCount,
+        'flagged_count' => $flaggedCount,
+    ]]);
+}
+
+if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $method === 'POST') {
+    $sessionId   = $matches[1];
+    $payload     = request_json();
+    $sheetsInput = $payload['sheets'] ?? [];
+
+    if (!is_array($sheetsInput)) {
+        json_response(400, ['ok' => false, 'error' => 'sheets must be an array']);
+    }
+
+    $committed = 0;
+    $skipped   = 0;
+
+    foreach ($sheetsInput as $sheetData) {
+        $id      = (int) ($sheetData['id']      ?? 0);
+        $include = (bool) ($sheetData['include'] ?? false);
+
+        if (!$include) {
+            $del = db()->prepare('DELETE FROM scan_staging WHERE id = :id AND session_id = :sid');
+            $del->execute([':id' => $id, ':sid' => $sessionId]);
+            $skipped++;
+            continue;
+        }
+
+        $examCode     = trim((string) ($sheetData['exam_code']    ?? ''));
+        $studentCode  = trim((string) ($sheetData['student_code'] ?? ''));
+        $finalAnswers = (array) ($sheetData['final_answers'] ?? []);
+
+        if ($examCode === '' || $studentCode === '') {
+            $skipped++;
+            continue;
+        }
+
+        $actStmt = db()->prepare(
+            'SELECT a.exam_id, e.title AS exam_title, e.total_items, e.answer_key
+             FROM subject_activities a
+             INNER JOIN exams e ON e.id = a.exam_id
+             WHERE a.exam_code = :code
+             LIMIT 1'
+        );
+        $actStmt->execute([':code' => $examCode]);
+        $examRow = $actStmt->fetch();
+
+        if (!$examRow) {
+            $skipped++;
+            continue;
+        }
+
+        $examId    = (int)    $examRow['exam_id'];
+        $examTitle = (string) $examRow['exam_title'];
+        $total     = (int)    $examRow['total_items'];
+        $keyItems  = parse_answers_input(strtoupper((string) $examRow['answer_key']));
+
+        $score = 0;
+        for ($i = 0; $i < $total; $i++) {
+            $ans = strtoupper(trim((string) ($finalAnswers[$i] ?? '')));
+            if ($ans !== '' && $ans === ($keyItems[$i] ?? '')) {
+                $score++;
+            }
+        }
+
+        $storedAnswers = implode('|', array_map(
+            static fn($a) => strtoupper(trim((string) $a)),
+            array_slice($finalAnswers, 0, $total)
+        ));
+
+        try {
+            $ins = db()->prepare(
+                'INSERT INTO submissions (exam_id, exam_title, student_code, answers, score)
+                 VALUES (:exam_id, :exam_title, :student_code, :answers, :score)'
+            );
+            $ins->execute([
+                ':exam_id'      => $examId,
+                ':exam_title'   => $examTitle,
+                ':student_code' => $studentCode,
+                ':answers'      => $storedAnswers,
+                ':score'        => $score,
+            ]);
+
+            $del = db()->prepare('DELETE FROM scan_staging WHERE id = :id AND session_id = :sid');
+            $del->execute([':id' => $id, ':sid' => $sessionId]);
+            $committed++;
+        } catch (Throwable $e) {
+            $skipped++;
+        }
+    }
+
+    json_response(200, ['ok' => true, 'data' => [
+        'committed' => $committed,
+        'skipped'   => $skipped,
+    ]]);
+}
+
+if (preg_match('#^/scan/session/([a-f0-9\-]+)$#', $path, $matches) && $method === 'DELETE') {
+    $sessionId = $matches[1];
+    scanner_request('/batch-stop', 'POST', ['session_id' => $sessionId, 'wait' => true]);
+
+    $del = db()->prepare('DELETE FROM scan_staging WHERE session_id = :sid');
+    $del->execute([':sid' => $sessionId]);
+    json_response(200, ['ok' => true]);
 }
 
 json_response(404, ['ok' => false, 'error' => 'Route not found']);

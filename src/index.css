@@ -169,3 +169,35 @@ body {
 .night-mode textarea::placeholder {
   color: #94a3b8;
 }
+
+.night-mode .scan-last-card-ok {
+  background-color: rgb(6 78 59 / 0.32) !important;
+  border-color: rgb(52 211 153 / 0.55) !important;
+}
+
+.night-mode .scan-last-card-flagged {
+  background-color: rgb(120 53 15 / 0.34) !important;
+  border-color: rgb(245 158 11 / 0.6) !important;
+}
+
+.night-mode .scan-last-label,
+.night-mode .scan-last-score {
+  color: #cbd5e1 !important;
+}
+
+.night-mode .scan-last-name,
+.night-mode .scan-review-student-name {
+  color: #f8fafc !important;
+}
+
+.night-mode .scan-last-flag {
+  color: #fbbf24 !important;
+}
+
+.night-mode .scan-review-row-flagged {
+  background-color: rgb(120 53 15 / 0.2) !important;
+}
+
+.night-mode .scan-review-row-flagged .scan-review-student-code {
+  color: #e2e8f0 !important;
+}
