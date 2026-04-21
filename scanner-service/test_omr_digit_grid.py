@@ -91,8 +91,10 @@ class DigitGridReaderTests(unittest.TestCase):
     def test_ambiguous_column_is_rejected(self):
         grid = dict(TEST_GRID, x_centers=[60], cols=1)
         image = self._blank_form(grid)
-        _fill_digit(image, grid, 0, 2)
-        _fill_digit(image, grid, 0, 3)
+        cx, cy = omr._bubble_center(grid, 0, 2)
+        cv2.circle(image, (cx, cy), 5, 255, -1)
+        cx, cy = omr._bubble_center(grid, 0, 3)
+        cv2.circle(image, (cx, cy), 6, 255, -1)
         flags = []
         decisions = []
 
@@ -107,6 +109,27 @@ class DigitGridReaderTests(unittest.TestCase):
 
         self.assertEqual(digits, [None])
         self.assertEqual(decisions[0]["reason"], "ambiguous")
+
+    def test_double_marked_digit_column_is_rejected(self):
+        grid = dict(TEST_GRID, x_centers=[60], cols=1)
+        image = self._blank_form(grid)
+        _fill_digit(image, grid, 0, 2)
+        _fill_digit(image, grid, 0, 7)
+        flags = []
+        decisions = []
+
+        digits = omr.read_digit_grid(
+            image,
+            grid,
+            flags,
+            digit_decisions=decisions,
+            name="exam_code",
+            flag_prefix="EXAM_CODE",
+        )
+
+        self.assertEqual(digits, [None])
+        self.assertEqual(decisions[0]["reason"], "double_mark")
+        self.assertIn("DOUBLE_MARK_EXAM_CODE_COL_1", flags)
 
 
 if __name__ == "__main__":

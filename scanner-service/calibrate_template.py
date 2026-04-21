@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import cv2
+import numpy as np
 from PIL import Image
 
 import omr
@@ -39,13 +40,33 @@ def calibrate(blank_scan: Path) -> dict:
     # Normalise resolution: if the image isn't already at canonical DPI size,
     # scale it up so the corner registration marks meet the minimum area filter.
     if image.size != (omr.CANON_W, omr.CANON_H):
-        print(f"Resizing from {image.size} → ({omr.CANON_W}, {omr.CANON_H})")
+        print(f"Resizing from {image.size} -> ({omr.CANON_W}, {omr.CANON_H})")
         image = image.resize((omr.CANON_W, omr.CANON_H), Image.LANCZOS)
 
     binary = omr.preprocess(image)
     raw_anchors = omr.detect_page_anchors(binary)
     normalized, normalization_debug = omr.normalize_scan(binary, use_template_profile=False)
-    anchors = omr.detect_page_anchors(normalized)
+
+    # raw_anchors remain in the incoming scan frame and are used only for
+    # matching future scans. anchors are the canonical frame used by
+    # a5_template_v1.png and by live scan normalization.
+    # Re-detecting in the normalized image returns 0 because corner marks end up
+    # clipped at the image boundary, so project raw marks through the same
+    # perspective homography that created the blank reference image.
+    tl, tr, br, bl = omr._choose_registration_corners(raw_anchors)
+    _src = cv2.getPerspectiveTransform(
+        np.float32([[tl[0], tl[1]], [tr[0], tr[1]],
+                    [br[0], br[1]], [bl[0], bl[1]]]),
+        np.float32([[0, 0], [omr.CANON_W - 1, 0],
+                    [omr.CANON_W - 1, omr.CANON_H - 1], [0, omr.CANON_H - 1]]),
+    )
+    _raw_pts = np.float32([[[float(a["center"][0]), float(a["center"][1])]]
+                            for a in raw_anchors])
+    _canon_pts = cv2.perspectiveTransform(_raw_pts, _src).reshape(-1, 2)
+    anchors = [
+        {**_anchor_payload(mark), "center": [round(float(cx), 2), round(float(cy), 2)]}
+        for mark, (cx, cy) in zip(raw_anchors, _canon_pts)
+    ]
 
     sections: dict[str, dict] = {}
     section_registration: dict[str, dict] = {}
@@ -56,6 +77,7 @@ def calibrate(blank_scan: Path) -> dict:
 
     profile = {
         "template_version": omr.TEMPLATE_VERSION,
+        "blank_reference_frame": "canonical_anchors",
         "canonical_size": [omr.CANON_W, omr.CANON_H],
         "source_blank_scan": str(blank_scan),
         "raw_size": [int(binary.shape[1]), int(binary.shape[0])],
