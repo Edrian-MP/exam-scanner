@@ -25,5 +25,6 @@ dist-ssr
 
 # Scanner service generated scan outputs
 scanner-service/scans/
+scanner-service/__pycache__/omr.cpython-312.pyc
 
 .claude/
