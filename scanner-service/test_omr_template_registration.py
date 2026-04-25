@@ -208,6 +208,10 @@ class TemplateRegistrationTests(unittest.TestCase):
         payload = save_args[2]
         self.assertEqual(payload["coordinate_frame"], "canonical_template")
         self.assertTrue(payload["blank_reference_used"])
+        self.assertEqual(payload["prepared_pil_size"], [omr.CANON_W, omr.CANON_H])
+        self.assertFalse(payload["input_size_normalized"])
+        self.assertEqual(payload["selected_orientation"], "original")
+        self.assertEqual(payload["orientation_correction"], "none")
         self.assertEqual(payload["scan_quality"]["sections_failed"], [])
         self.assertEqual(payload["scan_quality"]["sections_registered"], [
             "student_code",
@@ -215,6 +219,171 @@ class TemplateRegistrationTests(unittest.TestCase):
             "answers_left",
             "answers_right",
         ])
+
+    def test_process_sheet_resizes_smaller_epson_portrait_output(self):
+        profile, _blank, filled = _build_process_sheet_fixture()
+        image = _sheet_to_pil(filled).resize((1159, 1655), Image.Resampling.LANCZOS)
+
+        with patch.object(omr, "load_template_profile", return_value=profile), patch.object(
+            omr,
+            "fetch_answer_key",
+            return_value={"answer_key": ["A"] * 25, "total_items": 25},
+        ), patch.object(omr, "_REQUESTS_AVAILABLE", False), patch.object(
+            omr,
+            "_save_omr_debug",
+        ) as save_debug:
+            result = omr.process_sheet(image, 11, "http://example.test/api")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.student_code, "987654")
+        self.assertEqual(result.exam_code, "244524")
+
+        payload = save_debug.call_args.args[2]
+        self.assertEqual(payload["selected_orientation"], "original")
+        self.assertEqual(payload["orientation_correction"], "none")
+        self.assertTrue(payload["input_size_normalized"])
+        self.assertEqual(payload["prepared_pil_size"], [omr.CANON_W, omr.CANON_H])
+        self.assertEqual(payload["page_registration_method"], "raw_to_canonical_template_anchor_homography")
+        self.assertEqual(payload["page_registration"]["inliers"], 8)
+
+    def test_process_sheet_selects_rotation_for_manually_rotated_landscape_scan(self):
+        profile, _blank, filled = _build_process_sheet_fixture()
+        image = _sheet_to_pil(filled).transpose(Image.Transpose.ROTATE_270)
+
+        with patch.object(omr, "load_template_profile", return_value=profile), patch.object(
+            omr,
+            "fetch_answer_key",
+            return_value={"answer_key": ["A"] * 25, "total_items": 25},
+        ), patch.object(omr, "_REQUESTS_AVAILABLE", False), patch.object(
+            omr,
+            "_save_omr_debug",
+        ) as save_debug:
+            result = omr.process_sheet(image, 12, "http://example.test/api")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.student_code, "987654")
+        self.assertEqual(result.exam_code, "244524")
+
+        payload = save_debug.call_args.args[2]
+        self.assertEqual(payload["selected_orientation"], "rotate_90_ccw")
+        self.assertEqual(payload["orientation_correction"], "rotate_90_ccw")
+        self.assertTrue(payload["input_size_normalized"])
+        self.assertEqual(payload["page_registration"]["inliers"], 8)
+
+    def test_process_sheet_rotates_landscape_content_inside_portrait_canvas_left(self):
+        profile, _blank, filled = _build_process_sheet_fixture()
+        portrait = _sheet_to_pil(filled)
+        landscape = portrait.transpose(Image.Transpose.ROTATE_270)
+        image = Image.new("L", (omr.CANON_W, omr.CANON_H), 255)
+        scale = min(omr.CANON_W / landscape.width, omr.CANON_H / landscape.height)
+        fit_size = (
+            max(1, int(round(landscape.width * scale))),
+            max(1, int(round(landscape.height * scale))),
+        )
+        fit = landscape.resize(fit_size, Image.Resampling.LANCZOS)
+        image.paste(fit, (omr.CANON_W - fit.width, 0))
+
+        with patch.object(omr, "load_template_profile", return_value=profile), patch.object(
+            omr,
+            "fetch_answer_key",
+            return_value={"answer_key": ["A"] * 25, "total_items": 25},
+        ), patch.object(omr, "_REQUESTS_AVAILABLE", False), patch.object(
+            omr,
+            "_save_omr_debug",
+        ) as save_debug:
+            result = omr.process_sheet(image, 15, "http://example.test/api")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.student_code, "987654")
+        self.assertEqual(result.exam_code, "244524")
+        self.assertEqual(result.raw_answers.split("|"), ["A"] * 25)
+
+        payload = save_debug.call_args.args[2]
+        self.assertEqual(payload["selected_orientation"], "portrait_canvas_rotate_full_90_ccw")
+        self.assertEqual(payload["orientation_correction"], "rotate_90_ccw")
+        self.assertEqual(payload["candidate_source"], "portrait_canvas_rotate_full")
+        self.assertEqual(payload["prepared_image_source"], "rotate_full_then_post_rotation_bbox")
+        self.assertIn("rotated_canvas_size", payload)
+        self.assertIn("post_rotation_content_bbox", payload)
+        self.assertEqual(payload["preview_image_source"], "prepared_orientation_candidate")
+        self.assertEqual(payload["page_registration"]["inliers"], 8)
+        selected = next(
+            item for item in payload["orientation_candidates"]
+            if item["orientation"] == "portrait_canvas_rotate_full_90_ccw"
+        )
+        self.assertEqual(selected["status"], "ok")
+        self.assertEqual(selected["candidate_source"], "portrait_canvas_rotate_full")
+        self.assertEqual(selected["prepared_image_source"], "rotate_full_then_post_rotation_bbox")
+        self.assertIn("post_rotation_content_bbox", selected)
+        self.assertIn("rotated_canvas_size", selected)
+        self.assertTrue(selected["portrait_canvas_detected"])
+        self.assertTrue(selected["landscape_content_detected"])
+        self.assertTrue(selected["content_bbox_touches_edges"]["right"])
+
+    def test_process_sheet_flags_sideways_clipped_content_without_guessing(self):
+        profile, _blank, filled = _build_process_sheet_fixture()
+        landscape = _sheet_to_pil(filled).transpose(Image.Transpose.ROTATE_270)
+        image = Image.new("L", (omr.CANON_W, omr.CANON_H), 255)
+        clipped = landscape.crop((0, 0, omr.CANON_W, landscape.height))
+        image.paste(clipped, (0, 0))
+
+        with patch.object(omr, "load_template_profile", return_value=profile), patch.object(
+            omr,
+            "_REQUESTS_AVAILABLE",
+            False,
+        ), patch.object(omr, "_save_omr_debug") as save_debug:
+            result = omr.process_sheet(image, 14, "http://example.test/api")
+
+        self.assertEqual(result.status, "flagged")
+        self.assertEqual(result.raw_answers, "")
+        self.assertIn("UNREADABLE", result.flag_reasons)
+        self.assertIn("PAGE_REGISTRATION_FAILED", result.flag_reasons)
+        self.assertIn("SCAN_CONTENT_CLIPPED_OR_SIDEWAYS", result.flag_reasons)
+
+        payload = save_debug.call_args.args[2]
+        self.assertEqual(payload["scan_rejection_reason"], "SIDEWAYS_CONTENT_CLIPPED")
+        self.assertEqual(payload["preview_image_source"], "failed_orientation_candidate")
+        self.assertIn(
+            payload["failure_preview_orientation"],
+            {
+                "portrait_canvas_rotate_full_90_ccw",
+                "portrait_canvas_content_rotate_90_ccw",
+                "content_rotate_90_ccw",
+            },
+        )
+        self.assertTrue(all(item["status"] == "failed" for item in payload["orientation_candidates"]))
+        self.assertTrue(any(
+            any((item.get("content_bbox_touches_edges") or {}).values())
+            for item in payload["orientation_candidates"]
+            if item.get("candidate_source") in {
+                "content_box",
+                "portrait_canvas_content_box",
+                "portrait_canvas_rotate_full",
+            }
+        ))
+
+    def test_process_sheet_selects_180_rotation_when_registration_proves_it(self):
+        profile, _blank, filled = _build_process_sheet_fixture()
+        image = _sheet_to_pil(filled).transpose(Image.Transpose.ROTATE_180)
+
+        with patch.object(omr, "load_template_profile", return_value=profile), patch.object(
+            omr,
+            "fetch_answer_key",
+            return_value={"answer_key": ["A"] * 25, "total_items": 25},
+        ), patch.object(omr, "_REQUESTS_AVAILABLE", False), patch.object(
+            omr,
+            "_save_omr_debug",
+        ) as save_debug:
+            result = omr.process_sheet(image, 13, "http://example.test/api")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.student_code, "987654")
+        self.assertEqual(result.exam_code, "244524")
+
+        payload = save_debug.call_args.args[2]
+        self.assertEqual(payload["selected_orientation"], "rotate_180")
+        self.assertEqual(payload["orientation_correction"], "rotate_180")
+        self.assertEqual(payload["page_registration"]["inliers"], 8)
 
     def test_process_sheet_fails_closed_on_page_registration_failure(self):
         profile, _blank, _filled = _build_process_sheet_fixture()
@@ -241,6 +410,9 @@ class TemplateRegistrationTests(unittest.TestCase):
         self.assertEqual(payload["coordinate_frame"], "raw_scan")
         self.assertEqual(payload["status"], "flagged")
         self.assertIn("PAGE_REGISTRATION_FAILED", payload["flag_reasons"])
+        self.assertEqual(payload["selected_orientation"], None)
+        self.assertIn("orientation_candidates", payload)
+        self.assertTrue(all(item["status"] == "failed" for item in payload["orientation_candidates"]))
 
     def test_template_profile_has_raw_and_canonical_anchors(self):
         profile = omr.load_template_profile(include_image=False)

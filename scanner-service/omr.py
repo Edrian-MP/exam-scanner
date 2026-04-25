@@ -227,6 +227,532 @@ def preprocess(pil_image: "Image.Image") -> "np.ndarray":
     return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
 
+def _template_raw_size(profile: dict[str, Any] | None) -> tuple[int, int]:
+    raw_size = (profile or {}).get("raw_size") or [CANON_W, CANON_H]
+    if len(raw_size) != 2:
+        return CANON_W, CANON_H
+    width, height = int(raw_size[0]), int(raw_size[1])
+    if width <= 0 or height <= 0:
+        return CANON_W, CANON_H
+    return width, height
+
+
+def _resize_for_template(pil_image: "Image.Image", target_size: tuple[int, int]) -> "Image.Image":
+    if pil_image.size == target_size:
+        return pil_image.copy()
+    return pil_image.resize(target_size, Image.Resampling.LANCZOS)
+
+
+def _white_for_mode(mode: str) -> Any:
+    if mode == "1":
+        return 1
+    if mode in {"L", "P", "I", "F"}:
+        return 255
+    if mode == "RGBA":
+        return (255, 255, 255, 255)
+    if mode == "LA":
+        return (255, 255)
+    return (255, 255, 255)
+
+
+def _fit_pad_for_template(
+    pil_image: "Image.Image",
+    target_size: tuple[int, int],
+) -> tuple["Image.Image", dict[str, Any]]:
+    target_w, target_h = target_size
+    width, height = pil_image.size
+    if width <= 0 or height <= 0:
+        return _resize_for_template(pil_image, target_size), {
+            "fit_scale": None,
+            "fit_size": [target_w, target_h],
+            "fit_offset": [0, 0],
+        }
+    scale = min(target_w / width, target_h / height)
+    fit_w = max(1, int(round(width * scale)))
+    fit_h = max(1, int(round(height * scale)))
+    resized = pil_image.resize((fit_w, fit_h), Image.Resampling.LANCZOS)
+    canvas = Image.new(pil_image.mode, target_size, _white_for_mode(pil_image.mode))
+    offset_x = (target_w - fit_w) // 2
+    offset_y = (target_h - fit_h) // 2
+    canvas.paste(resized, (offset_x, offset_y))
+    return canvas, {
+        "fit_scale": round(float(scale), 6),
+        "fit_size": [fit_w, fit_h],
+        "fit_offset": [offset_x, offset_y],
+    }
+
+
+def _binary_content_bbox(binary: "np.ndarray", margin: int = 24) -> tuple[int, int, int, int] | None:
+    ys, xs = np.where(binary > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+    height, width = binary.shape[:2]
+    x0 = max(0, int(xs.min()) - margin)
+    y0 = max(0, int(ys.min()) - margin)
+    x1 = min(width, int(xs.max()) + 1 + margin)
+    y1 = min(height, int(ys.max()) + 1 + margin)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def _bbox_touches_edges(
+    bbox: tuple[int, int, int, int],
+    size: tuple[int, int],
+    edge_tolerance: int,
+) -> dict[str, bool]:
+    x0, y0, x1, y1 = bbox
+    width, height = size
+    return {
+        "left": x0 <= edge_tolerance,
+        "top": y0 <= edge_tolerance,
+        "right": x1 >= width - edge_tolerance,
+        "bottom": y1 >= height - edge_tolerance,
+    }
+
+
+def _expand_bbox(
+    bbox: tuple[int, int, int, int],
+    size: tuple[int, int],
+    margin: int,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = bbox
+    width, height = size
+    return (
+        max(0, int(x0) - margin),
+        max(0, int(y0) - margin),
+        min(width, int(x1) + margin),
+        min(height, int(y1) + margin),
+    )
+
+
+def _portrait_canvas_rotate_full_candidate(
+    pil_image: "Image.Image",
+    target_size: tuple[int, int],
+    order: int,
+    *,
+    content_bbox: tuple[int, int, int, int],
+    content_touches_edges: dict[str, bool],
+    content_aspect: float,
+) -> dict[str, Any] | None:
+    """Rotate the whole portrait canvas first so the ink bbox cannot cut off the top."""
+    rotated = pil_image.transpose(Image.Transpose.ROTATE_90)
+    rotated_binary = preprocess(rotated)
+    detect_margin = max(16, int(round(min(rotated.width, rotated.height) * 0.01)))
+    rotated_bbox = _binary_content_bbox(rotated_binary, margin=detect_margin)
+    if rotated_bbox is None:
+        return None
+
+    generous_margin = max(96, int(round(min(rotated.width, rotated.height) * 0.08)))
+    expanded_bbox = _expand_bbox(rotated_bbox, rotated.size, generous_margin)
+    crop = rotated.crop(expanded_bbox)
+    prepared, fit_meta = _fit_pad_for_template(crop, target_size)
+    edge_tolerance = max(24, int(round(min(rotated.width, rotated.height) * 0.02)))
+    rotated_touches_edges = _bbox_touches_edges(rotated_bbox, rotated.size, edge_tolerance)
+    return {
+        "order": order,
+        "orientation": "portrait_canvas_rotate_full_90_ccw",
+        "orientation_correction": "rotate_90_ccw",
+        "source_size": [int(crop.width), int(crop.height)],
+        "prepared_size": [int(prepared.width), int(prepared.height)],
+        "input_size_normalized": crop.size != target_size,
+        "candidate_source": "portrait_canvas_rotate_full",
+        "content_bbox": [int(v) for v in content_bbox],
+        "content_bbox_touches_edges": content_touches_edges,
+        "content_bbox_aspect": round(float(content_aspect), 4),
+        "portrait_canvas_detected": True,
+        "landscape_content_detected": True,
+        "rotated_canvas_size": [int(rotated.width), int(rotated.height)],
+        "post_rotation_content_bbox": [int(v) for v in expanded_bbox],
+        "post_rotation_detected_content_bbox": [int(v) for v in rotated_bbox],
+        "post_rotation_bbox_touches_edges": rotated_touches_edges,
+        "prepared_image_source": "rotate_full_then_post_rotation_bbox",
+        **fit_meta,
+        "image": prepared,
+    }
+
+
+def _content_box_candidates(
+    pil_image: "Image.Image",
+    target_size: tuple[int, int],
+    start_order: int,
+) -> list[dict[str, Any]]:
+    binary = preprocess(pil_image)
+    crop_margin = max(32, int(round(min(pil_image.width, pil_image.height) * 0.03)))
+    bbox = _binary_content_bbox(binary, margin=crop_margin)
+    if bbox is None:
+        return []
+    x0, y0, x1, y1 = bbox
+    edge_tolerance = max(24, int(round(min(pil_image.width, pil_image.height) * 0.02)))
+    touches_edges = _bbox_touches_edges(bbox, pil_image.size, edge_tolerance)
+    crop = pil_image.crop((x0, y0, x1, y1))
+    bbox_w = x1 - x0
+    bbox_h = y1 - y0
+    portrait_canvas = pil_image.height > pil_image.width
+    landscape_content = bbox_w > bbox_h * 1.05
+    transforms = []
+    candidates: list[dict[str, Any]] = []
+    next_order = start_order
+    if portrait_canvas and landscape_content:
+        rotate_full = _portrait_canvas_rotate_full_candidate(
+            pil_image,
+            target_size,
+            next_order,
+            content_bbox=bbox,
+            content_touches_edges=touches_edges,
+            content_aspect=float(bbox_w / max(1, bbox_h)),
+        )
+        if rotate_full is not None:
+            candidates.append(rotate_full)
+            next_order += 1
+        transforms.append((
+            "portrait_canvas_content_rotate_90_ccw",
+            "rotate_90_ccw",
+            crop.transpose(Image.Transpose.ROTATE_90),
+            "portrait_canvas_content_box",
+        ))
+        transforms.append((
+            "content_rotate_90_cw",
+            "rotate_90_cw",
+            crop.transpose(Image.Transpose.ROTATE_270),
+            "content_box",
+        ))
+    elif landscape_content:
+        transforms.append((
+            "content_rotate_90_ccw",
+            "rotate_90_ccw",
+            crop.transpose(Image.Transpose.ROTATE_90),
+            "content_box",
+        ))
+        transforms.append((
+            "content_rotate_90_cw",
+            "rotate_90_cw",
+            crop.transpose(Image.Transpose.ROTATE_270),
+            "content_box",
+        ))
+    else:
+        transforms.append((
+            "content_rotate_90_cw",
+            "rotate_90_cw",
+            crop.transpose(Image.Transpose.ROTATE_270),
+            "content_box",
+        ))
+        transforms.append((
+            "content_rotate_90_ccw",
+            "rotate_90_ccw",
+            crop.transpose(Image.Transpose.ROTATE_90),
+            "content_box",
+        ))
+    transforms.extend([
+        ("content_original", "none", crop, "content_box"),
+        ("content_rotate_180", "rotate_180", crop.transpose(Image.Transpose.ROTATE_180), "content_box"),
+    ])
+    for offset, (name, correction, image, source) in enumerate(transforms):
+        prepared, fit_meta = _fit_pad_for_template(image, target_size)
+        candidates.append({
+            "order": next_order + offset,
+            "orientation": name,
+            "orientation_correction": correction,
+            "source_size": [int(image.width), int(image.height)],
+            "prepared_size": [int(prepared.width), int(prepared.height)],
+            "input_size_normalized": image.size != target_size,
+            "candidate_source": source,
+            "content_bbox": [x0, y0, x1, y1],
+            "content_bbox_touches_edges": touches_edges,
+            "content_bbox_aspect": round(float(bbox_w / max(1, bbox_h)), 4),
+            "portrait_canvas_detected": portrait_canvas,
+            "landscape_content_detected": landscape_content,
+            **fit_meta,
+            "image": prepared,
+        })
+    return candidates
+
+
+def _orientation_candidate_images(
+    pil_image: "Image.Image",
+    target_size: tuple[int, int],
+) -> list[dict[str, Any]]:
+    direct_transforms = [
+        ("original", "none", pil_image),
+        ("rotate_180", "rotate_180", pil_image.transpose(Image.Transpose.ROTATE_180)),
+    ]
+    candidates: list[dict[str, Any]] = []
+    for order, (name, correction, image) in enumerate(direct_transforms):
+        prepared = _resize_for_template(image, target_size)
+        candidates.append({
+            "order": order,
+            "orientation": name,
+            "orientation_correction": correction,
+            "source_size": [int(image.width), int(image.height)],
+            "prepared_size": [int(prepared.width), int(prepared.height)],
+            "input_size_normalized": image.size != target_size,
+            "candidate_source": "full_canvas_resize",
+            "fit_scale": None,
+            "fit_size": None,
+            "fit_offset": None,
+            "image": prepared,
+        })
+    rotate_transforms = [
+        ("rotate_90_cw", "rotate_90_cw", pil_image.transpose(Image.Transpose.ROTATE_270)),
+        ("rotate_90_ccw", "rotate_90_ccw", pil_image.transpose(Image.Transpose.ROTATE_90)),
+    ]
+    for offset, (name, correction, image) in enumerate(rotate_transforms, start=len(candidates)):
+        prepared, fit_meta = _fit_pad_for_template(image, target_size)
+        candidates.append({
+            "order": offset,
+            "orientation": name,
+            "orientation_correction": correction,
+            "source_size": [int(image.width), int(image.height)],
+            "prepared_size": [int(prepared.width), int(prepared.height)],
+            "input_size_normalized": image.size != target_size,
+            "candidate_source": "full_canvas_fit_pad",
+            **fit_meta,
+            "image": prepared,
+        })
+    candidates.extend(_content_box_candidates(pil_image, target_size, len(candidates)))
+    return candidates
+
+
+def _failed_registration_debug(exc_debug: dict[str, Any]) -> dict[str, Any]:
+    anchor_detection = exc_debug.get("anchor_detection") or {}
+    anchor_matches = exc_debug.get("anchor_matches") or []
+    payload = {
+        "matched_anchor_count": len(anchor_matches) or anchor_detection.get("matched_anchor_count"),
+        "merged_candidate_count": anchor_detection.get("merged_candidate_count"),
+        "profile_guided_candidate_count": anchor_detection.get("profile_guided_candidate_count"),
+        "global_candidate_count": anchor_detection.get("global_candidate_count"),
+        "unmatched_anchor_count": anchor_detection.get("unmatched_anchor_count"),
+        "matched_anchor_indices": [
+            match.get("template_index")
+            for match in anchor_matches
+            if match.get("template_index") is not None
+        ],
+    }
+    if "anchor_span" in exc_debug:
+        payload["anchor_span"] = exc_debug["anchor_span"]
+    if "page_registration_attempts" in exc_debug:
+        payload["page_registration_attempts"] = exc_debug["page_registration_attempts"]
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _orientation_attempt_payload(
+    candidate: dict[str, Any],
+    binary: "np.ndarray",
+    status: str,
+    *,
+    normalization_debug: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "orientation": candidate["orientation"],
+        "orientation_correction": candidate["orientation_correction"],
+        "source_size": candidate["source_size"],
+        "prepared_size": candidate["prepared_size"],
+        "input_size_normalized": candidate["input_size_normalized"],
+        "candidate_source": candidate.get("candidate_source"),
+        "status": status,
+    }
+    if candidate.get("fit_scale") is not None:
+        payload["fit_scale"] = candidate.get("fit_scale")
+        payload["fit_size"] = candidate.get("fit_size")
+        payload["fit_offset"] = candidate.get("fit_offset")
+    if candidate.get("content_bbox") is not None:
+        payload["content_bbox"] = candidate.get("content_bbox")
+        payload["content_bbox_touches_edges"] = candidate.get("content_bbox_touches_edges")
+        payload["content_bbox_aspect"] = candidate.get("content_bbox_aspect")
+        payload["portrait_canvas_detected"] = candidate.get("portrait_canvas_detected")
+        payload["landscape_content_detected"] = candidate.get("landscape_content_detected")
+    for key in (
+        "rotated_canvas_size",
+        "post_rotation_content_bbox",
+        "post_rotation_detected_content_bbox",
+        "post_rotation_bbox_touches_edges",
+        "prepared_image_source",
+    ):
+        if candidate.get(key) is not None:
+            payload[key] = candidate.get(key)
+    if normalization_debug:
+        page_registration = normalization_debug.get("page_registration") or {}
+        anchor_detection = normalization_debug.get("anchor_detection") or {}
+        payload.update({
+            "page_registration_method": normalization_debug.get("page_registration_method"),
+            "matched_anchor_count": len(normalization_debug.get("anchor_matches") or []),
+            "inliers": page_registration.get("inliers"),
+            "mean_error": normalization_debug.get("page_registration_mean_error"),
+            "max_error": normalization_debug.get("page_registration_max_error"),
+            "merged_candidate_count": anchor_detection.get("merged_candidate_count"),
+        })
+    else:
+        payload["detected_anchor_count"] = len(detect_anchor_candidates(binary))
+    if error:
+        payload["error"] = error
+    if normalization_debug is None and isinstance(error, str):
+        # Rich failure details are added by the caller when available.
+        pass
+    return payload
+
+
+def _sideways_clipped_scan_detected(attempts: list[dict[str, Any]]) -> bool:
+    if not attempts:
+        return False
+    original = next((item for item in attempts if item.get("orientation") == "original"), None)
+    if not original:
+        return False
+    original_many_candidates = int(original.get("detected_anchor_count") or 0) >= 20
+    original_span_failed = "ANCHOR_SPAN_INSUFFICIENT" in str(original.get("error") or "")
+    content_touches_edge = any(
+        any((item.get("content_bbox_touches_edges") or {}).values())
+        for item in attempts
+        if item.get("candidate_source") in {
+            "content_box",
+            "portrait_canvas_content_box",
+            "portrait_canvas_rotate_full",
+        }
+    )
+    rotated_candidates_failed = [
+        item for item in attempts
+        if item.get("orientation_correction") in {"rotate_90_cw", "rotate_90_ccw"}
+    ]
+    no_rotated_success = bool(rotated_candidates_failed) and all(
+        item.get("status") != "ok" for item in rotated_candidates_failed
+    )
+    content_box_attempted = any(
+        item.get("candidate_source") in {
+            "content_box",
+            "portrait_canvas_content_box",
+            "portrait_canvas_rotate_full",
+        }
+        for item in attempts
+    )
+    return bool(
+        original_span_failed
+        and content_touches_edge
+        and no_rotated_success
+        and (original_many_candidates or content_box_attempted)
+    )
+
+
+def _prepare_and_normalize_scan(
+    pil_image: "Image.Image",
+    profile: dict[str, Any],
+) -> tuple["np.ndarray", "np.ndarray", dict[str, Any], dict[str, Any], "Image.Image"]:
+    target_size = _template_raw_size(profile)
+    attempts: list[dict[str, Any]] = []
+    successes: list[dict[str, Any]] = []
+    failure_preview_image: Image.Image | None = None
+    failure_preview_binary: np.ndarray | None = None
+    failure_preview_orientation: str | None = None
+    failure_preview_priority = 0
+    preview_priorities = {
+        "content_rotate_90_ccw": 1,
+        "portrait_canvas_content_rotate_90_ccw": 2,
+        "portrait_canvas_rotate_full_90_ccw": 3,
+    }
+
+    for candidate in _orientation_candidate_images(pil_image, target_size):
+        binary = preprocess(candidate["image"])
+        preview_priority = preview_priorities.get(candidate["orientation"], 0)
+        if preview_priority > failure_preview_priority:
+            failure_preview_image = candidate["image"]
+            failure_preview_binary = binary
+            failure_preview_orientation = candidate["orientation"]
+            failure_preview_priority = preview_priority
+        try:
+            normalized, normalization_debug = normalize_scan(binary, use_template_profile=True)
+        except UnreadableSheetError as exc:
+            attempt = _orientation_attempt_payload(
+                candidate,
+                binary,
+                "failed",
+                error=str(exc),
+            )
+            attempt.update(_failed_registration_debug(exc.debug))
+            attempts.append(attempt)
+            continue
+
+        attempt = _orientation_attempt_payload(
+            candidate,
+            binary,
+            "ok",
+            normalization_debug=normalization_debug,
+        )
+        attempts.append(attempt)
+        successes.append({
+            "candidate": candidate,
+            "binary": binary,
+            "normalized": normalized,
+            "normalization_debug": normalization_debug,
+            "attempt": attempt,
+        })
+
+    if not successes:
+        failure_reason = (
+            "SIDEWAYS_CONTENT_CLIPPED"
+            if _sideways_clipped_scan_detected(attempts)
+            else "NO_ORIENTATION_CANDIDATE_REGISTERED"
+        )
+        failure_debug = {
+            "prepared_pil_size": [int(target_size[0]), int(target_size[1])],
+            "input_size_normalized": pil_image.size != target_size,
+            "orientation_correction": None,
+            "selected_orientation": None,
+            "orientation_candidates": attempts,
+            "page_registration_method": None,
+            "page_registration_error": failure_reason,
+            "scan_rejection_reason": failure_reason,
+            "failure_preview_orientation": failure_preview_orientation,
+        }
+        if failure_preview_image is not None:
+            failure_debug["_failure_preview_image"] = failure_preview_image
+        if failure_preview_binary is not None:
+            failure_debug["_failure_preview_binary"] = failure_preview_binary
+        raise UnreadableSheetError(
+            f"PAGE_REGISTRATION_FAILED:{failure_reason}",
+            failure_debug,
+        )
+
+    def _success_key(item: dict[str, Any]) -> tuple[int, float, float, float, int]:
+        attempt = item["attempt"]
+        inliers = int(attempt.get("inliers") or 0)
+        max_error = float(attempt.get("max_error") if attempt.get("max_error") is not None else 999999.0)
+        mean_error = float(attempt.get("mean_error") if attempt.get("mean_error") is not None else 999999.0)
+        candidate_source = item["candidate"].get("candidate_source")
+        if candidate_source == "portrait_canvas_rotate_full":
+            source_priority = 1
+        elif candidate_source in {"content_box", "portrait_canvas_content_box"}:
+            source_priority = 2
+        else:
+            source_priority = 0
+        return (-inliers, float(source_priority), max_error, mean_error, int(item["candidate"]["order"]))
+
+    selected = sorted(successes, key=_success_key)[0]
+    candidate = selected["candidate"]
+    prep_debug = {
+        "prepared_pil_size": candidate["prepared_size"],
+        "input_size_normalized": pil_image.size != target_size,
+        "orientation_correction": candidate["orientation_correction"],
+        "selected_orientation": candidate["orientation"],
+        "orientation_candidates": attempts,
+    }
+    for key in (
+        "candidate_source",
+        "rotated_canvas_size",
+        "post_rotation_content_bbox",
+        "post_rotation_detected_content_bbox",
+        "post_rotation_bbox_touches_edges",
+        "prepared_image_source",
+    ):
+        if candidate.get(key) is not None:
+            prep_debug[key] = candidate.get(key)
+    return (
+        selected["binary"],
+        selected["normalized"],
+        selected["normalization_debug"],
+        prep_debug,
+        candidate["image"],
+    )
+
+
 def _find_registration_marks(
     binary: "np.ndarray",
     min_area: int = REG_MARK_MIN_AREA,
@@ -1887,6 +2413,7 @@ def register_section(
         )
 
     live_lattice_meta: dict[str, Any] = {}
+    live_lattice_fallback_reason: str | None = None
     try:
         live_grid, live_lattice_meta = refine_section_geometry(normalized, section_name, profile)
         base_x_pitch = float(template_grid.get("x_pitch") or 0.0)
@@ -1895,7 +2422,14 @@ def register_section(
         y_delta = abs(float(live_lattice_meta["y_pitch"]) - base_y_pitch) / base_y_pitch if base_y_pitch else 0.0
         pitch_delta = max(x_delta, y_delta)
     except SectionRegistrationError as exc:
-        raise SectionRegistrationError(f"{section_name}: live lattice validation failed: {exc}") from exc
+        # Live lattice detection failed (e.g. one bubble column outside the base ROI due to
+        # lateral paper shift). Fall back to the coarse template-match grid, which already
+        # passed coverage and residual validation above. This avoids losing an entire section
+        # just because the fine lattice step couldn't cluster all columns.
+        logger.warning("%s: live lattice failed (%s) — using coarse grid", section_name, exc)
+        live_grid = coarse_grid
+        pitch_delta = 0.0
+        live_lattice_fallback_reason = str(exc)
 
     if pitch_delta > SECTION_MAX_PITCH_DELTA:
         raise SectionRegistrationError(
@@ -1932,7 +2466,12 @@ def register_section(
             f"{section_name}: high live-grid residual ({final_metrics['residual_px']:.1f}px)"
         )
 
-    read_grid_source = "live_lattice" if drift_debug["x_axis_accepted"] else "live_lattice_y_coarse_x"
+    if live_lattice_fallback_reason:
+        read_grid_source = "coarse_template_fallback"
+    elif drift_debug["x_axis_accepted"]:
+        read_grid_source = "live_lattice"
+    else:
+        read_grid_source = "live_lattice_y_coarse_x"
     grid = dict(live_grid)
     grid.update({
         "x_centers": [round(v, 2) for v in final_x],
@@ -1963,6 +2502,7 @@ def register_section(
         "section": section_name,
         "method": "template_match_live_lattice",
         "read_grid_source": read_grid_source,
+        "live_lattice_fallback": live_lattice_fallback_reason,
         "status": "ok",
         "accepted": True,
         "roi": list(spec["roi"]),
@@ -2572,11 +3112,17 @@ def process_sheet(
     digit_decisions: list[dict[str, Any]] = []
     profile = load_template_profile(include_image=True)
     blank_reference = profile.get("_blank_reference")
-    binary = preprocess(pil_image)
+    target_raw_size = _template_raw_size(profile)
+    prepared_for_debug = _resize_for_template(pil_image, target_raw_size)
+    binary = preprocess(prepared_for_debug)
     debug_payload.update({
         "template_version": profile.get("template_version", TEMPLATE_VERSION),
         "template_profile_loaded": bool(profile.get("profile_loaded")),
         "blank_reference_used": blank_reference is not None,
+        "prepared_pil_size": [int(prepared_for_debug.width), int(prepared_for_debug.height)],
+        "input_size_normalized": pil_image.size != target_raw_size,
+        "orientation_correction": None,
+        "selected_orientation": None,
         "template_profile": {
             "source_blank_scan": profile.get("source_blank_scan"),
             "blank_reference_frame": profile.get("blank_reference_frame", "canonical_anchors"),
@@ -2633,9 +3179,21 @@ def process_sheet(
         )
 
     try:
-        scan, normalization_debug = normalize_scan(binary, use_template_profile=True)
+        binary, scan, normalization_debug, preparation_debug, prepared_image = _prepare_and_normalize_scan(
+            pil_image,
+            profile,
+        )
     except UnreadableSheetError as exc:
         flags.extend(["UNREADABLE", "PAGE_REGISTRATION_FAILED"])
+        failure_preview_image = exc.debug.pop("_failure_preview_image", None)
+        failure_preview_binary = exc.debug.pop("_failure_preview_binary", None)
+        if failure_preview_image is not None:
+            thumbnail = _pil_to_base64_jpeg(failure_preview_image)
+            debug_payload["preview_image_source"] = "failed_orientation_candidate"
+        if failure_preview_binary is not None:
+            binary = failure_preview_binary
+        if exc.debug.get("scan_rejection_reason") == "SIDEWAYS_CONTENT_CLIPPED":
+            flags.append("SCAN_CONTENT_CLIPPED_OR_SIDEWAYS")
         debug_payload.update(exc.debug)
         debug_payload.update({
             "coordinate_frame": "raw_scan",
@@ -2680,6 +3238,9 @@ def process_sheet(
             scan_image=thumbnail,
         )
 
+    thumbnail = _pil_to_base64_jpeg(prepared_image)
+    preparation_debug["preview_image_source"] = "prepared_orientation_candidate"
+    debug_payload.update(preparation_debug)
     debug_payload.update(normalization_debug)
     debug_payload["coordinate_frame"] = "canonical_template"
 

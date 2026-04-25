@@ -65,10 +65,17 @@ SERIAL_PORT       = "COM3"
 SERIAL_BAUD       = 9600
 SERIAL_TIMEOUT    = 10      # seconds to wait for SHEET_FED response
 INTER_SHEET_DELAY = 1.5     # seconds between sheets
-MAX_UNREADABLE    = 3       # consecutive unreadable sheets before stopping
+MAX_UNREADABLE    = 40       # consecutive unreadable sheets before stopping
 STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
+ADF_WAIT_TIMEOUT  = 30      # seconds to wait for user to insert the next paper
+ADF_POLL_INTERVAL = 2       # seconds between ADF-empty retry attempts
 OUT_DIR           = Path(__file__).resolve().parent / "scans"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Set True when paper is fed landscape (long edge first) into the ES-50.
+# This swaps the WIA scan extents so the full paper width is captured,
+# then rotates the result to portrait before OMR processing.
+LANDSCAPE_FEED_MODE = True
 
 
 # ── Global state ──────────────────────────────────────────────────────────────
@@ -78,6 +85,7 @@ class ScannerState:
         self.last_scan_at: str | None = None
         self.last_output: str | None = None
         self.active_session_id: str | None = None
+        self.waiting_for_paper: bool = False
         self._batch_thread: threading.Thread | None = None
         self._stop_flag   = threading.Event()
         self._batch_lock  = threading.Lock()
@@ -142,10 +150,19 @@ class ScannerState:
                 "batch_running": self._batch_running,
                 "active_session_id": self.active_session_id,
                 "stop_requested": self._stop_flag.is_set(),
+                "waiting_for_paper": self.waiting_for_paper,
             }
 
 
 STATE = ScannerState()
+
+
+# ── WIA helpers ───────────────────────────────────────────────────────────────
+
+def _is_adf_empty_error(exc: Exception) -> bool:
+    """Return True for WIA errors that mean the ADF has no paper (not a real scan failure)."""
+    s = str(exc).lower()
+    return "-2145320957" in str(exc) or "no documents" in s or "paper empty" in s
 
 
 # ── WIA scanning ──────────────────────────────────────────────────────────────
@@ -173,11 +190,13 @@ def scan_sheet_wia() -> "Image.Image":
     item.Properties["Horizontal Resolution"].Value = 300
     item.Properties["Vertical Resolution"].Value   = 300
     item.Properties["Current Intent"].Value        = 4  # grayscale
+    h_extent = omr.CANON_H if LANDSCAPE_FEED_MODE else omr.CANON_W
+    v_extent = omr.CANON_W if LANDSCAPE_FEED_MODE else omr.CANON_H
     for prop_name, value in (
         ("Horizontal Start Position", 0),
         ("Vertical Start Position", 0),
-        ("Horizontal Extent", omr.CANON_W),
-        ("Vertical Extent", omr.CANON_H),
+        ("Horizontal Extent", h_extent),
+        ("Vertical Extent", v_extent),
     ):
         try:
             item.Properties[prop_name].Value = value
@@ -188,6 +207,9 @@ def scan_sheet_wia() -> "Image.Image":
     raw = bytes(image_file.FileData.BinaryData)
     image = Image.open(io.BytesIO(raw))
     logger.info("WIA returned scan size: %sx%s", image.width, image.height)
+    if LANDSCAPE_FEED_MODE:
+        image = image.transpose(Image.Transpose.ROTATE_270)  # landscape → portrait (CW 90°)
+        logger.info("Landscape mode: rotated to %sx%s", image.width, image.height)
     return image
 
 
@@ -262,36 +284,59 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
             else:
                 time.sleep(0.2)  # simulate feed delay in mock mode
 
-            # 2. Scan
-            try:
-                if use_hardware and _WIA_AVAILABLE and _PIL_AVAILABLE:
-                    pil_image = scan_sheet_wia()
-                else:
-                    pil_image = scan_sheet_mock(sheet_index)
-            except Exception as exc:
-                exc_str = str(exc)
-                # WIA paper-empty: treat as clean end-of-batch, not an error
-                if "-2145320957" in exc_str or "no documents" in exc_str.lower() or "paper empty" in exc_str.lower():
-                    logger.info("ADF empty after sheet %d — batch complete.", sheet_index - 1)
-                    break
-                logger.warning("Scan failed: %s", exc)
-                result_dict = {
-                    "sheet_index":  sheet_index,
-                    "student_code": None,
-                    "exam_code":    None,
-                    "raw_answers":  "",
-                    "score":        0,
-                    "max_score":    0,
-                    "status":       "flagged",
-                    "flag_reasons": ["SCAN_ERROR"],
-                    "scan_image":   "",
-                }
-                post_sheet_to_api(session_id, result_dict)
-                consecutive_bad += 1
-                if consecutive_bad >= MAX_UNREADABLE:
-                    logger.error("Too many scan failures — aborting batch.")
-                    break
-                continue
+            # 2. Scan — poll until paper is inserted, timeout, or stop requested.
+            pil_image = None
+            if use_hardware and _WIA_AVAILABLE and _PIL_AVAILABLE:
+                wait_deadline = time.time() + ADF_WAIT_TIMEOUT
+                logged_waiting = False
+                while not STATE.should_stop():
+                    try:
+                        pil_image = scan_sheet_wia()
+                        break  # success
+                    except Exception as exc:
+                        if not _is_adf_empty_error(exc):
+                            # Real scan error — post a flagged result and count it
+                            logger.warning("Scan error: %s", exc)
+                            result_dict = {
+                                "sheet_index":  sheet_index,
+                                "student_code": None,
+                                "exam_code":    None,
+                                "raw_answers":  "",
+                                "score":        0,
+                                "max_score":    0,
+                                "status":       "flagged",
+                                "flag_reasons": ["SCAN_ERROR"],
+                                "scan_image":   "",
+                            }
+                            post_sheet_to_api(session_id, result_dict)
+                            consecutive_bad += 1
+                            if consecutive_bad >= MAX_UNREADABLE:
+                                logger.error("Too many scan errors — aborting batch.")
+                            STATE.waiting_for_paper = False
+                            break
+                        # ADF empty — wait for the user to insert the next paper
+                        if time.time() >= wait_deadline:
+                            logger.info(
+                                "ADF empty — no paper inserted within %ds — batch complete.",
+                                ADF_WAIT_TIMEOUT,
+                            )
+                            STATE.waiting_for_paper = False
+                            break
+                        if not logged_waiting:
+                            logger.info(
+                                "ADF empty after sheet %d — waiting up to %ds for next paper...",
+                                sheet_index - 1,
+                                ADF_WAIT_TIMEOUT,
+                            )
+                            logged_waiting = True
+                            STATE.waiting_for_paper = True
+                        time.sleep(ADF_POLL_INTERVAL)
+                STATE.waiting_for_paper = False
+            else:
+                pil_image = scan_sheet_mock(sheet_index)
+
+            if pil_image is None:
+                break  # ADF timed out, stop requested, or hard scan error posted above
 
             # 3. OMR processing
             try:
@@ -375,14 +420,15 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "data": {
                     "scanner": {
-                        "connected":      STATE.scanner_connected(),
-                        "arduino":        STATE.arduino_connected(),
-                        "batch_running":  state_snapshot["batch_running"],
+                        "connected":         STATE.scanner_connected(),
+                        "arduino":           STATE.arduino_connected(),
+                        "batch_running":     state_snapshot["batch_running"],
                         "active_session_id": state_snapshot["active_session_id"],
-                        "stop_requested": state_snapshot["stop_requested"],
-                        "driver":         "wia+arduino",
-                        "last_scan_at":   STATE.last_scan_at,
-                        "last_output":    STATE.last_output,
+                        "stop_requested":    state_snapshot["stop_requested"],
+                        "waiting_for_paper": state_snapshot["waiting_for_paper"],
+                        "driver":            "wia+arduino",
+                        "last_scan_at":      STATE.last_scan_at,
+                        "last_output":       STATE.last_output,
                     }
                 },
             })
@@ -432,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(409, {"ok": False, "error": "A batch scan is already running"})
                 return
 
-            use_hw = _WIA_AVAILABLE and _SERIAL_AVAILABLE
+            use_hw = _WIA_AVAILABLE  # serial (Arduino) is optional; WIA drives hardware mode
             t = threading.Thread(
                 target=_batch_loop,
                 args=(session_id, use_hw),

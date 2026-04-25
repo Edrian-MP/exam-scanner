@@ -24,18 +24,25 @@ void loop() {
   }
   delay(500);
 
+  //bigla para di nagat-il
+  digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  analogWrite(ENA, 120);
+  delay(100);
+
   //Feed OUT orig was i <3; pwn = 200
-  for(int i = 0; i < 4; i++){
+  for(int i = 0; i < 9; i++){
     digitalWrite(LED_BUILTIN, HIGH);
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
-    analogWrite(ENA, 150);
+    analogWrite(ENA, 108);
     delay(100); // run for 100 ms
 
     digitalWrite(LED_BUILTIN, LOW);
     analogWrite(ENA, 0);
     delay(100);
   }
-  delay(2000);
+  delay(2500);
 
 }
