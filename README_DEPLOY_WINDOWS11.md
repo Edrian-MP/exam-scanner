@@ -85,18 +85,42 @@ Check service status:
 1. Start XAMPP: Apache + MySQL
 2. Start scanner service:
    `python scanner-service/main.py`
-3. Start frontend:
+3. Build and serve via Apache (recommended for shared access):
+   ```powershell
+   npm run build
+   ```
+   Then open: `http://localhost/exam-scanner/dist/`
+
+   *Or* start the dev server (host PC + network devices):
    `npm run dev`
 
-## 9) Troubleshooting
+## 9) Accessing from Another Device
+
+Once Apache is running and the frontend is built, any device on the same Wi-Fi or PC hotspot can open the app using the host PC's IP.
+
+| Context | URL |
+|---|---|
+| Host PC | `http://localhost/exam-scanner/dist/` |
+| LAN (use host PC's IP) | `http://<TPC-IP>/exam-scanner/dist/` |
+| PC hotspot (typical IP) | `http://192.168.137.1/exam-scanner/dist/` |
+
+**Find your IP:** run `ipconfig` in PowerShell and look for the IPv4 address of your active adapter (Wi-Fi or "Local Area Connection* 12" for the hotspot).
+
+**Firewall:** Windows Defender Firewall must allow inbound TCP on port **80** for Apache. When prompted by Windows during Apache startup, click **Allow**. If not prompted:
+1. Open *Windows Defender Firewall with Advanced Security*
+2. New Inbound Rule → Port → TCP 80 → Allow
+
+The scanner service stays on `127.0.0.1:5001` (host only). Remote devices reach scanner flows through the PHP backend, which proxies internally.
+
+## 10) Troubleshooting
 - `Port 5173 busy`: run `npm run dev -- --port 5174` and update CORS/API config if needed.
 - `API DB connection failed`: verify MySQL running and schema imported.
 - `CORS errors`: ensure frontend URL matches `cors_origin` in `backend/api/config.php` (or env var).
 - `Scanner offline`: confirm Python service is running on port 5001.
+- `Remote device can't reach app`: check Windows Firewall allows port 80; verify both devices are on the same network.
+- `Remote device gets 404 on assets`: ensure `npm run build` was run after the last code change.
 
-## 10) Optional Production Hardening
-- Build frontend with `npm run build`.
-- Serve static `dist/` via Apache instead of Vite dev server.
+## 11) Optional Production Hardening
 - Set backend env vars (`DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASS`, `SCANNER_SERVICE_URL`, `CORS_ORIGIN`) in Apache/OS environment.
 
 test

@@ -31,7 +31,27 @@
 - `POST /exams`
 - `POST /grade/submit`
 
+## Network Access (LAN / Hotspot)
+
+The built app is served by Apache and reachable from any device on the same network.
+
+| Context | URL |
+|---|---|
+| Host PC (localhost) | `http://localhost/exam-scanner/dist/` |
+| LAN (host PC's IP) | `http://<TPC-IP>/exam-scanner/dist/` |
+| PC hotspot (default) | `http://192.168.137.1/exam-scanner/dist/` |
+
+**Start order:**
+1. XAMPP → Apache + MySQL
+2. `python scanner-service/main.py`
+3. `npm run build` (then Apache serves `dist/`)  
+   *or* `npm run dev` for the live-reload dev server
+
+**Firewall:** Windows Firewall must allow inbound connections on port 80 (Apache) from the target network. For the dev server on port 5173, allow that port too if testing dev mode from another device.
+
+**Scanner service** stays on `127.0.0.1:5001` (host only). Remote devices reach it indirectly through the PHP backend proxy.
+
 ## Notes
 - PHP API proxies scanner calls to Python service.
-- CORS defaults to `http://localhost:5173`.
+- CORS defaults to `http://localhost:5173` (dev proxy handles cross-origin in dev mode).
 - Replace mock scan logic in `scanner-service/main.py` with actual WIA + pyserial flow.

@@ -1,6 +1,6 @@
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL ||
-  'http://localhost/exam-scanner/backend/api';
+  '/exam-scanner/backend/api';
 const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
 
 async function parseResponse(response) {
