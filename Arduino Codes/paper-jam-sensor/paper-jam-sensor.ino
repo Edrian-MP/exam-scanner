@@ -22,6 +22,19 @@ void stopMotor() {
   digitalWrite(ledPin, LOW);
 }
 
+bool waitForPaperDetected(unsigned long timeoutMs) {
+  unsigned long startTime = millis();
+
+  while (!isPaperDetected()) {
+    if (millis() - startTime >= timeoutMs) {
+      return false; // paper did not reach sensor
+    }
+    delay(10);
+  }
+
+  return true; // paper reached sensor
+}
+
 void setup() {
   pinMode(ledPin, OUTPUT);
   pinMode(encoderPin, INPUT);
@@ -57,24 +70,29 @@ void loop() {
   }
 
   if (autoRun) {
-    Serial.println("Running...");
-    runSequence();
-    Serial.println("Stopped.");
+  Serial.println("Running...");
+  runSequence();
+  Serial.println("Stopped.");
 
-    // sensor only matters after the sequence
-    Serial.println("Waiting for paper to reach sensor...");
-    while (!isPaperDetected()) {
-      delay(10);
-    }
+  Serial.println("Waiting for paper to reach sensor...");
 
-    Serial.println("Paper reached sensor. Waiting for sensor to clear...");
-    while (isPaperDetected()) {
-      delay(10);
-    }
+  bool paperReached = waitForPaperDetected(3000); // wait max 3 seconds
 
-    Serial.println("Sensor cleared. Waiting 2 seconds before next run...");
-    delay(2000);
+  if (!paperReached) {
+    Serial.println("Paper did not reach sensor. Retrying cycle...");
+    delay(500);
+    return; // restart loop and runSequence again
   }
+
+  Serial.println("Paper reached sensor. Waiting for sensor to clear...");
+
+  while (isPaperDetected()) {
+    delay(10);
+  }
+
+  Serial.println("Sensor cleared. Waiting 2 seconds before next run...");
+  delay(2000);
+}
 }
 
 void runSequence() {
