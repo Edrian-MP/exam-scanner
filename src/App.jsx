@@ -150,6 +150,8 @@ function App() {
   const answerKeyRef = useRef(null)
   const gradeAnswersRef = useRef(null)
   const scanPollRef = useRef(null)
+  const scanSessionId = scanSession?.session_id
+  const scanSessionStatus = scanSession?.status
 
   const latestExam = useMemo(() => exams[0] || null, [exams])
   const selectedGradeExam = useMemo(
@@ -195,8 +197,10 @@ function App() {
     const root = document.documentElement
     if (isNightMode) {
       root.classList.add('night-mode')
+      root.classList.add('dark')
     } else {
       root.classList.remove('night-mode')
+      root.classList.remove('dark')
     }
 
     try {
@@ -287,23 +291,66 @@ function App() {
   // ── Batch scan ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!scanSession || scanSession.status !== 'scanning') {
+    if (!scanSessionId || scanSessionStatus !== 'scanning') {
       if (scanPollRef.current != null) {
         clearTimeout(scanPollRef.current)
         scanPollRef.current = null
       }
       return
     }
-    const sid = scanSession.session_id
+    const sid = scanSessionId
     let active = true
 
     async function poll() {
-      try {
-        const res = await apiGet(`/scan/session/${sid}/results`)
-        if (active) setStagedSheets(res.data?.sheets || [])
-      } catch {
-        // ignore transient poll errors
+      let finished = false
+      let finishReason = ''
+      let finishMessage = ''
+
+      const [results, status] = await Promise.allSettled([
+        apiGet(`/scan/session/${sid}/results`),
+        apiGet('/scanner/status'),
+      ])
+
+      if (!active) return
+
+      if (results.status === 'fulfilled') {
+        setStagedSheets(results.value.data?.sheets || [])
       }
+
+      if (status.status === 'fulfilled') {
+        setScanner(status.value)
+        const scannerState = status.value?.scanner || {}
+        finished =
+          scannerState.batch_running === false &&
+          scannerState.last_batch_session_id === sid
+        finishReason = scannerState.last_batch_reason || ''
+        finishMessage = scannerState.last_batch_message || ''
+      }
+
+      if (finished) {
+        try {
+          const finalRes = await apiGet(`/scan/session/${sid}/results`)
+          if (active) setStagedSheets(finalRes.data?.sheets || [])
+        } catch {
+          // Keep the latest successful staged-sheet snapshot.
+        }
+
+        if (!active) return
+
+        if (finishReason && !['completed', 'stopped'].includes(finishReason)) {
+          setError(finishMessage || 'Batch scan stopped before finishing.')
+        } else {
+          setError('')
+        }
+
+        setScanSession((prev) =>
+          prev?.session_id === sid && prev.status === 'scanning'
+            ? { ...prev, status: 'review' }
+            : prev
+        )
+        return
+      }
+
       if (active) scanPollRef.current = setTimeout(poll, 2000)
     }
 
@@ -315,7 +362,7 @@ function App() {
         scanPollRef.current = null
       }
     }
-  }, [scanSession?.session_id, scanSession?.status])
+  }, [scanSessionId, scanSessionStatus])
 
   async function waitForScannerIdle(timeoutMs = 10000) {
     const deadline = Date.now() + timeoutMs
@@ -656,11 +703,17 @@ function App() {
             <button
               type="button"
               onClick={() => setIsNightMode((prev) => !prev)}
-              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300 sm:px-3.5"
               aria-pressed={isNightMode}
-              title="Toggle night mode"
+              title={isNightMode ? 'Switch to day mode' : 'Switch to night mode'}
             >
-              {isNightMode ? 'Day Mode' : 'Night Mode'}
+              <span className="hidden sm:inline">{isNightMode ? 'Day Mode' : 'Night Mode'}</span>
+              <svg className="h-4 w-4 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                {isNightMode
+                  ? <><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></>
+                  : <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                }
+              </svg>
             </button>
             <button
               type="button"
@@ -668,16 +721,24 @@ function App() {
                 setAccountError('')
                 setShowAccountSettings(true)
               }}
-              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300 sm:px-3.5"
+              title="Account settings"
             >
-              Account Settings
+              <span className="hidden sm:inline">Account Settings</span>
+              <svg className="h-4 w-4 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+              </svg>
             </button>
             <button
               type="button"
               onClick={onLogout}
-              className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:border-slate-300 sm:px-3.5"
+              title="Logout"
             >
-              Logout
+              <span className="hidden sm:inline">Logout</span>
+              <svg className="h-4 w-4 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
             </button>
           </div>
         </div>

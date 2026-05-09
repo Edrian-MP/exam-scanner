@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import ScanReview from './ScanReview'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import * as XLSX from 'xlsx'
@@ -204,6 +204,114 @@ function formatStudentFullName(givenName = '', middleName = '', surname = '') {
   return [given, middleInitial, sur].filter(Boolean).join(' ') || sur || given || 'Unnamed Student'
 }
 
+function safeFilenamePart(value = '', fallback = 'subject') {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+  return cleaned || fallback
+}
+
+function getActivityTotal(activity = {}) {
+  const totalItems = Number(activity.total_items || 0)
+  if (totalItems > 0) return totalItems
+  const maxScore = Number(activity.max_score || 0)
+  return maxScore > 0 ? maxScore : ''
+}
+
+function findGradebookActivityDetail(row, activity) {
+  const details = Array.isArray(row.published_details) ? row.published_details : []
+  return details.find((detail) => String(detail.activity_id) === String(activity.activity_id)) || null
+}
+
+function formatSummaryActivityScore(detail) {
+  if (!detail) return 0
+  if (detail.status === 'checked') {
+    return Number(detail.score ?? 0)
+  }
+  return 0
+}
+
+function createExportWorksheet(rows, subject) {
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['Section', subject?.term_label || '', 'Course Title', subject?.title || ''],
+    ['Course Code', subject?.subject_code || '', '', ''],
+    [],
+  ])
+  XLSX.utils.sheet_add_json(worksheet, rows, { origin: 'A4' })
+  worksheet['!cols'] = [
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 28 },
+    { wch: 22 },
+    { wch: 14 },
+    { wch: 20 },
+    { wch: 16 },
+  ]
+  return worksheet
+}
+
+function exportGradebookWorkbook({ gradebook, publishedActivities, subject }) {
+  if (!Array.isArray(gradebook) || gradebook.length === 0) return
+
+  const activities = Array.isArray(publishedActivities) ? publishedActivities : []
+  const summaryRows = gradebook.map((row) => {
+    const summary = {
+      'Student Code': row.student_code || '',
+      Surname: row.surname || '',
+      'Given Name': row.given_name || '',
+      'Middle Name': row.middle_name || '',
+      'Full Name': formatStudentFullName(row.given_name, row.middle_name, row.surname),
+      Completed: Number(row.completed_activities || 0),
+      'Published Activities': Number(row.published_activities || 0),
+      'Average Percent': row.average_percent ?? '',
+    }
+
+    activities.forEach((activity, index) => {
+      const total = getActivityTotal(activity)
+      const title = String(activity.title || `Activity ${index + 1}`).trim()
+      const header = `Activity ${index + 1}: ${title}${total ? ` (${total} pts)` : ''}`
+      const detail = findGradebookActivityDetail(row, activity)
+      summary[header] = formatSummaryActivityScore(detail)
+    })
+
+    return summary
+  })
+
+  const detailRows = gradebook.flatMap((row) => {
+    const fullName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
+    return activities.map((activity, index) => {
+      const detail = findGradebookActivityDetail(row, activity) || {}
+      const total = getActivityTotal(detail) || getActivityTotal(activity)
+      return {
+        'Student Code': row.student_code || '',
+        'Full Name': fullName,
+        'Activity No.': index + 1,
+        'Activity Title': activity.title || detail.title || '',
+        Type: activity.activity_type || detail.activity_type || '',
+        Status: detail.status || 'posted',
+        Score: detail.status === 'checked' ? Number(detail.score ?? 0) : 0,
+        Total: total,
+        'Percent': detail.percent ?? '',
+      }
+    })
+  })
+
+  const workbook = XLSX.utils.book_new()
+  const summarySheet = createExportWorksheet(summaryRows, subject)
+  const detailsSheet = createExportWorksheet(detailRows.length ? detailRows : [
+    { Note: 'No published activities for this gradebook.' },
+  ], subject)
+
+  XLSX.utils.book_append_sheet(workbook, summarySheet, 'Gradebook Summary')
+  XLSX.utils.book_append_sheet(workbook, detailsSheet, 'Activity Details')
+
+  const subjectCode = safeFilenamePart(subject?.subject_code || subject?.title, 'subject')
+  const exportedAt = new Date().toISOString().slice(0, 10)
+  XLSX.writeFile(workbook, `gradebook-${subjectCode}-${exportedAt}.xlsx`)
+}
+
 function relativeTime(dateStr) {
   if (!dateStr) return ''
   const d = new Date(dateStr)
@@ -285,14 +393,28 @@ const PUBLISH_STATUS_STYLES = {
    ATOMIC COMPONENTS
 ═══════════════════════════════════════════════════════ */
 
-function Field({ label, hint, children }) {
+function Field({ label, hint, children, htmlFor: explicitFor }) {
+  const autoId = useId()
+  const fieldId = explicitFor || autoId
+  // Inject id into first child if it's a React element without its own id
+  const enhancedChildren = Array.isArray(children)
+    ? children.map((child, i) => {
+        if (i === 0 && child && typeof child === 'object' && 'props' in child && !child.props.id) {
+          return { ...child, props: { ...child.props, id: fieldId } }
+        }
+        return child
+      })
+    : (children && typeof children === 'object' && 'props' in children && !children.props.id
+        ? { ...children, props: { ...children.props, id: fieldId } }
+        : children)
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between">
-        <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">{label}</label>
+        <label htmlFor={fieldId} className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">{label}</label>
         {hint && <span className="text-[11px] text-slate-400">{hint}</span>}
       </div>
-      {children}
+      {enhancedChildren}
     </div>
   )
 }
@@ -329,35 +451,104 @@ function BoundedSelect({
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [activeIdx, setActiveIdx] = useState(-1)
   const wrapRef = useRef(null)
+  const listRef = useRef(null)
+  const searchRef = useRef(null)
+  const listboxId = useId()
+
+  const selected = options.find((opt) => String(opt.value) === String(value))
+  const queryNeedle = query.trim().toLowerCase()
+  const visibleOptions = queryNeedle
+    ? options.filter((opt) => String(opt.searchText || opt.label || '').toLowerCase().includes(queryNeedle))
+    : options
+  // Prepend the clear (placeholder) entry
+  const allItems = [{ value: '', label: placeholder }, ...visibleOptions]
 
   useEffect(() => {
     function onDocClick(event) {
       if (!wrapRef.current?.contains(event.target)) {
         setOpen(false)
         setQuery('')
+        setActiveIdx(-1)
       }
     }
     document.addEventListener('mousedown', onDocClick)
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [])
 
-  const selected = options.find((opt) => String(opt.value) === String(value))
-  const queryNeedle = query.trim().toLowerCase()
-  const filteredOptions = queryNeedle
-    ? options.filter((opt) => String(opt.searchText || opt.label || '').toLowerCase().includes(queryNeedle))
-    : options
+  useEffect(() => {
+    if (open && searchable) {
+      // Use requestAnimationFrame to focus after mount
+      requestAnimationFrame(() => searchRef.current?.focus())
+    }
+  }, [open, searchable])
+
+  function selectItem(val) {
+    onChange(val)
+    setOpen(false)
+    setQuery('')
+    setActiveIdx(-1)
+    wrapRef.current?.querySelector('button[role="combobox"]')?.focus()
+  }
+
+  function handleTriggerKeyDown(e) {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      setOpen(true)
+      setActiveIdx(0)
+    } else if (e.key === 'Escape') {
+      setOpen(false)
+    }
+  }
+
+  function handleListKeyDown(e) {
+    if (e.key === 'Escape') {
+      setOpen(false)
+      setQuery('')
+      setActiveIdx(-1)
+      wrapRef.current?.querySelector('button[role="combobox"]')?.focus()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveIdx((prev) => Math.min(prev + 1, allItems.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveIdx((prev) => Math.max(prev - 1, 0))
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      if (activeIdx >= 0 && allItems[activeIdx]) {
+        selectItem(allItems[activeIdx].value)
+      }
+    }
+  }
+
+  // Scroll active item into view
+  useEffect(() => {
+    if (!open || activeIdx < 0 || !listRef.current) return
+    const item = listRef.current.children[activeIdx]
+    item?.scrollIntoView({ block: 'nearest' })
+  }, [activeIdx, open])
+
+  const activeDescendantId = activeIdx >= 0 ? `${listboxId}-item-${activeIdx}` : undefined
 
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
       <button
         type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-activedescendant={activeDescendantId}
         onClick={() => {
           setOpen((prev) => {
-            if (prev) setQuery('')
+            if (prev) { setQuery(''); setActiveIdx(-1) }
             return !prev
           })
         }}
+        onKeyDown={handleTriggerKeyDown}
         className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left text-sm text-slate-800 shadow-sm outline-none transition-all duration-150 hover:border-slate-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
       >
         <span className={selected ? 'truncate text-slate-800' : 'truncate text-slate-400'}>
@@ -369,50 +560,51 @@ function BoundedSelect({
       </button>
 
       {open && (
-        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg" onKeyDown={handleListKeyDown}>
           {searchable && (
             <div className="border-b border-slate-100 p-2">
               <input
-                autoFocus
+                ref={searchRef}
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setQuery(e.target.value); setActiveIdx(0) }}
                 placeholder={searchPlaceholder}
                 className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
               />
             </div>
           )}
-          <div className="max-h-56 overflow-y-auto py-1">
-            <button
-              type="button"
-              onClick={() => {
-                onChange('')
-                setOpen(false)
-                setQuery('')
-              }}
-              className={`block w-full px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${value ? 'text-slate-500' : 'bg-slate-50 text-slate-700'}`}
-            >
-              {placeholder}
-            </button>
-            {(searchable ? filteredOptions : options).map((opt) => {
-              const active = String(opt.value) === String(value)
+          <div
+            ref={listRef}
+            id={listboxId}
+            role="listbox"
+            tabIndex={-1}
+            aria-label={placeholder}
+            className="max-h-56 overflow-y-auto py-1"
+          >
+            {allItems.map((opt, idx) => {
+              const isActive = idx === activeIdx
+              const isClear = opt.value === ''
+              const isSelected = String(opt.value) === String(value)
               return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => {
-                    onChange(String(opt.value))
-                    setOpen(false)
-                    setQuery('')
-                  }}
-                  className={`block w-full truncate px-3.5 py-2 text-left text-sm transition hover:bg-slate-50 ${active ? 'bg-slate-100 font-semibold text-slate-800' : 'text-slate-700'}`}
+                <div
+                  key={opt.value === '' ? '__clear__' : opt.value}
+                  id={`${listboxId}-item-${idx}`}
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => selectItem(opt.value)}
+                  className={`cursor-pointer px-3.5 py-2 text-sm transition select-none ${
+                    isActive ? 'bg-brand-50 text-brand-700' :
+                    isSelected && !isClear ? 'bg-slate-100 font-semibold text-slate-800' :
+                    isClear ? 'text-slate-500 hover:bg-slate-50' :
+                    'text-slate-700 hover:bg-slate-50'
+                  }`}
                   title={opt.label}
                 >
-                  {opt.label}
-                </button>
+                  <span className="block truncate">{opt.label}</span>
+                </div>
               )
             })}
-            {searchable && filteredOptions.length === 0 && (
+            {searchable && visibleOptions.length === 0 && (
               <p className="px-3.5 py-2 text-xs text-slate-400">{emptySearchText}</p>
             )}
           </div>
@@ -552,11 +744,115 @@ function MiniStat({ icon, label, value, sub, accent }) {
 }
 
 /* ═══════════════════════════════════════════════════════
+   CONFIRM MODAL
+═══════════════════════════════════════════════════════ */
+function ConfirmModal({ title, message, confirmLabel = 'Delete', onConfirm, onCancel }) {
+  const dialogRef = useRef(null)
+  const titleId = useId()
+
+  useEffect(() => {
+    const el = dialogRef.current
+    if (!el) return
+    const focusable = el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    focusable[0]?.focus()
+
+    function onKeyDown(e) {
+      if (e.key === 'Escape') { onCancel(); return }
+      if (e.key !== 'Tab') return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last?.focus() }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first?.focus() }
+      }
+    }
+
+    el.addEventListener('keydown', onKeyDown)
+    return () => el.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-6">
+          <p id={titleId} className="text-base font-bold text-slate-800">{title}</p>
+          {message && <p className="mt-2 text-sm text-slate-500">{message}</p>}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-6 py-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
+   TOAST STACK
+═══════════════════════════════════════════════════════ */
+function ToastStack({ toasts, onDismiss }) {
+  if (!toasts.length) return null
+  return (
+    <div
+      aria-live="polite"
+      aria-atomic="false"
+      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          role="alert"
+          className={`pointer-events-auto flex items-start gap-3 rounded-xl border px-4 py-3 shadow-lg text-sm transition-all ${
+            t.type === 'error'
+              ? 'border-rose-200 bg-rose-50 text-rose-700'
+              : t.type === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-slate-200 bg-white text-slate-700'
+          }`}
+        >
+          <span className="flex-1">{t.message}</span>
+          <button
+            type="button"
+            onClick={() => onDismiss(t.id)}
+            aria-label="Dismiss notification"
+            className="flex-shrink-0 opacity-60 hover:opacity-100 transition"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
    TAB BAR
 ═══════════════════════════════════════════════════════ */
 function TabBar({ activeTab, tabs, counts, onChange }) {
   return (
-    <div className="inline-flex flex-wrap items-center gap-1 rounded-2xl bg-slate-100 p-1.5">
+    <div role="tablist" className="inline-flex flex-wrap items-center gap-1 rounded-2xl bg-slate-100 p-1.5">
       {tabs.map((key) => {
         const meta   = TAB_META[key]
         const active = activeTab === key
@@ -565,6 +861,8 @@ function TabBar({ activeTab, tabs, counts, onChange }) {
           <button
             key={key}
             type="button"
+            role="tab"
+            aria-selected={active}
             onClick={() => onChange(key)}
             className={`relative flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
               active ? 'bg-white text-slate-800 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-500 hover:text-slate-700'
@@ -637,7 +935,7 @@ function ImportClasslistButton({ subjectId, educatorId, onDone }) {
       {status === 'importing' && (
         <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs text-violet-700">
           <div className="mb-1.5 flex items-center gap-2">
-            <SpinIcon /> Importing {progress.done}/{progress.total} students?
+            <SpinIcon /> Importing {progress.done} of {progress.total} students…
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-100">
             <div
@@ -652,7 +950,7 @@ function ImportClasslistButton({ subjectId, educatorId, onDone }) {
         <div className="overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-violet-100 bg-violet-50 px-3 py-2">
             <span className="text-xs font-bold text-violet-700">
-              {preview.length} students found ? ready to import
+              {preview.length} students found — ready to import
             </span>
             <button type="button" onClick={reset} className="text-slate-400 hover:text-slate-600">
               <XIcon />
@@ -717,7 +1015,7 @@ function RosterTab({
 }) {
   const a = TAB_META.roster.accent
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
+    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
 
       {/* LEFT: form */}
       <div className="flex flex-col gap-5 p-6">
@@ -889,7 +1187,7 @@ function ActivitiesTab({
   }, [hasAttachment])
 
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
+    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
 
       {/* LEFT: form */}
       <div className="flex flex-col gap-5 p-6">
@@ -1094,7 +1392,7 @@ function AnnouncementsTab({
 }) {
   const a = TAB_META.announcements.accent
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 xl:h-[520px] xl:max-h-[520px] xl:grid-cols-[380px_1fr] xl:divide-x xl:divide-y-0">
+    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:h-[520px] lg:max-h-[520px] lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
 
       {/* LEFT: form */}
       <div className="flex flex-col gap-5 p-6">
@@ -1170,7 +1468,9 @@ function AnnouncementsTab({
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
 function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken = '', manualContext = null }) {
-  const [showManual, setShowManual] = useState(false)
+  const [showManual, setShowManual] = useState(() => {
+    try { return sessionStorage.getItem('scanManualOpen') === '1' } catch { return false }
+  })
   const scannerConnected  = Boolean(scan.scanner?.scanner?.connected)
   const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'review'
   const stagedSheets      = scan.stagedSheets ?? []
@@ -1193,6 +1493,10 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
       searchText: `${s.student_code} ${fullName} ${s.surname || ''} ${s.given_name || ''}`,
     }
   }), [students])
+
+  useEffect(() => {
+    try { sessionStorage.setItem('scanManualOpen', showManual ? '1' : '0') } catch {}
+  }, [showManual])
 
   useEffect(() => {
     if (!manualFocusToken) return
@@ -1288,6 +1592,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
           onCommit={scan.onCommitSession}
           onDiscard={scan.onDiscardSession}
           onUpdateSheet={scan.onUpdateStagedSheet}
+          onStartNew={scan.onStartBatchScan}
         />
       </div>
     )
@@ -1411,30 +1716,36 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
 
             <Field label="Answers">
               {gradeItems.length > 0 ? (
-                <div className="grid gap-1.5 overflow-x-auto pb-1" style={MANUAL_ANSWER_GRID_STYLE}>
-                  {gradeItems.map((answer, idx) => (
-                    <div key={`answer-item-${idx}`} className="flex min-w-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-1.5 py-2">
-                      <span className="w-6 shrink-0 text-right font-mono text-xs font-semibold text-slate-500">{idx + 1}.</span>
-                      <input
-                        required
-                        ref={(el) => { answerInputRefs.current[idx] = el }}
-                        value={answer || ''}
-                        onChange={(e) => {
-                          const nextValue = String(e.target.value || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1)
-                          scan.onSetGradeAnswerItem?.(idx, nextValue)
-                          if (/^[A-Z]$/.test(nextValue) && idx + 1 < gradeItems.length) {
-                            requestAnimationFrame(() => {
-                              const next = answerInputRefs.current[idx + 1]
-                              if (next) { next.focus(); next.select() }
-                            })
-                          }
-                        }}
-                        className="w-full min-w-0 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-xs font-mono text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-                        placeholder="A"
-                      />
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <div className="mb-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                    Type A–D to fill and advance. Use arrow keys or click to navigate. Paste a numbered list to auto-fill.
+                  </div>
+                  <div className="grid gap-1.5 overflow-x-auto pb-1" style={MANUAL_ANSWER_GRID_STYLE}>
+                    {gradeItems.map((answer, idx) => (
+                      <div key={`answer-item-${idx}`} className="flex min-w-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-1.5 py-2">
+                        <span className="w-6 shrink-0 text-right font-mono text-xs font-semibold text-slate-500">{idx + 1}.</span>
+                        <input
+                          required
+                          aria-label={`Answer ${idx + 1}`}
+                          ref={(el) => { answerInputRefs.current[idx] = el }}
+                          value={answer || ''}
+                          onChange={(e) => {
+                            const nextValue = String(e.target.value || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1)
+                            scan.onSetGradeAnswerItem?.(idx, nextValue)
+                            if (/^[A-Z]$/.test(nextValue) && idx + 1 < gradeItems.length) {
+                              requestAnimationFrame(() => {
+                                const next = answerInputRefs.current[idx + 1]
+                                if (next) { next.focus(); next.select() }
+                              })
+                            }
+                          }}
+                          className="w-full min-w-0 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-xs font-mono text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                          placeholder="A"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </>
               ) : (
                 <p className="text-xs text-slate-400">Select an exam template to load answer items.</p>
               )}
@@ -1450,7 +1761,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   )
 }
 
-function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], onOpenPendingActivity = () => {} }) {
+function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], selectedSubject = null, onOpenPendingActivity = () => {} }) {
   const [expandedStudentId, setExpandedStudentId] = useState('')
   const hasExpanded = Boolean(expandedStudentId)
 
@@ -1458,17 +1769,28 @@ function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], onO
     <div className="min-h-[520px] p-6">
       {/* Summary pills */}
       {gradebook.length > 0 && (
-        <div className="mb-5 flex flex-wrap gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-900/25 dark:text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-            {gradebook.length} students enrolled
-          </span>
-          {atRiskStudents.length > 0 && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-700/70 dark:bg-amber-900/25 dark:text-amber-300">
-              <RiskIcon />
-              {atRiskStudents.length} at-risk
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-900/25 dark:text-emerald-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
+              {gradebook.length} students enrolled
             </span>
-          )}
+            {atRiskStudents.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-700/70 dark:bg-amber-900/25 dark:text-amber-300">
+                <RiskIcon />
+                {atRiskStudents.length} at-risk
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => exportGradebookWorkbook({ gradebook, publishedActivities, subject: selectedSubject })}
+            className="inline-flex w-fit items-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 dark:border-emerald-700/70 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-900/25"
+            title="Export gradebook to Excel"
+          >
+            <DocIcon />
+            Export Excel
+          </button>
         </div>
       )}
 
@@ -1506,8 +1828,16 @@ function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], onO
                 return [
                   <tr
                     key={`row-${row.student_id}`}
+                    tabIndex={0}
+                    aria-expanded={isExpanded}
                     onClick={() => setExpandedStudentId((prev) => (String(prev) === String(row.student_id) ? '' : String(row.student_id)))}
-                    className={`cursor-pointer border-b border-slate-100 transition-all duration-700 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/55 ${isAtRisk ? 'bg-rose-50/30 dark:bg-rose-900/20' : ''} ${isExpanded ? 'bg-brand-50/40 shadow-[inset_0_-1px_0_rgba(148,163,184,0.15)] dark:bg-brand-900/20 dark:shadow-[inset_0_-1px_0_rgba(71,85,105,0.35)]' : ''} ${isDimmed ? 'opacity-40 dark:opacity-50' : ''}`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setExpandedStudentId((prev) => (String(prev) === String(row.student_id) ? '' : String(row.student_id)))
+                      }
+                    }}
+                    className={`cursor-pointer border-b border-slate-100 transition-all duration-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-inset dark:border-slate-800 dark:hover:bg-slate-800/55 ${isAtRisk ? 'bg-rose-50/30 dark:bg-rose-900/20' : ''} ${isExpanded ? 'bg-brand-50/40 shadow-[inset_0_-1px_0_rgba(148,163,184,0.15)] dark:bg-brand-900/20 dark:shadow-[inset_0_-1px_0_rgba(71,85,105,0.35)]' : ''} ${isDimmed ? 'opacity-40 dark:opacity-50' : ''}`}
                   >
                     <td className={`py-3 pr-3 ${isAtRisk ? 'border-l-2 border-rose-200 pl-2 dark:border-rose-700/70' : ''}`}>
                       <div className="flex items-center justify-between gap-3">
@@ -1842,6 +2172,9 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [loading, setLoading]                     = useState(false)
   const [error, setError]                         = useState('')
   const [busyAction, setBusyAction]               = useState('')
+  const [toasts, setToasts]                       = useState([])
+  const [confirmDialog, setConfirmDialog]         = useState(null) // { title, message, confirmLabel, onConfirm }
+  const toastIdRef                                = useRef(0)
   const [subjectsPanelOpen, setSubjectsPanelOpen] = useState(false)
   const [showSubjectForm, setShowSubjectForm]     = useState(false)
   const [subjectSort, setSubjectSort]             = useState('date_desc')
@@ -2029,28 +2362,44 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     })
   }, [activityAttachmentName, editingActivityId, scan.exams, scan.examForm?.total_items, scan.answerKeyDisplay])
 
+  function showToast(message, type = 'error') {
+    const id = ++toastIdRef.current
+    setToasts((prev) => [...prev, { id, message, type }])
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 7000)
+  }
+
+  function dismissToast(id) {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }
+
   async function onCreateSubject(e) {
     e.preventDefault()
     setBusyAction('subject')
-    setError('')
     try {
       await apiPost(withEducator('/lms/subjects'), { ...subjectForm, educator_id: educatorId })
       setSubjectForm(emptySubjectForm)
       setShowSubjectForm(false)
       await loadSubjects()
-    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+    } catch (err) { showToast(err.message) } finally { setBusyAction('') }
   }
 
-  async function onDeleteSubject() {
+  function onDeleteSubject() {
     if (!selectedSubject) return
-    if (!window.confirm(`Delete "${selectedSubject.subject_code}"? This removes the list and activities.`)) return
-    setBusyAction('delete-subject')
-    try {
-      await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
-      setSelectedSubjectId('')
-      setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([]); setGradebookPublishedActivities([])
-      await loadSubjects()
-    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+    setConfirmDialog({
+      title: `Delete "${selectedSubject.subject_code}"?`,
+      message: 'This permanently removes the subject, all enrolled students, activities, and grades. This cannot be undone.',
+      confirmLabel: 'Delete Subject',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBusyAction('delete-subject')
+        try {
+          await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
+          setSelectedSubjectId('')
+          setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([]); setGradebookPublishedActivities([])
+          await loadSubjects()
+        } catch (err) { showToast(err.message) } finally { setBusyAction('') }
+      },
+    })
   }
 
   function onStartEditSubject() {
@@ -2277,17 +2626,25 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
-  async function onDeleteActivity(id) {
+  function onDeleteActivity(id) {
     if (!selectedSubjectId) return
-    if (!window.confirm('Delete this activity?')) return
-    setBusyAction(`delete-activity-${id}`)
-    try {
-      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${id}`))
-      if (String(editingActivityId) === String(id)) {
-        onCancelEditActivity()
-      }
-      await refreshSubjectAndHomepage(selectedSubjectId)
-    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+    const activity = activities.find((a) => String(a.id) === String(id))
+    setConfirmDialog({
+      title: `Delete "${activity?.title || 'this activity'}"?`,
+      message: 'This permanently removes the activity and all student submissions for it.',
+      confirmLabel: 'Delete Activity',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBusyAction(`delete-activity-${id}`)
+        try {
+          await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${id}`))
+          if (String(editingActivityId) === String(id)) {
+            onCancelEditActivity()
+          }
+          await refreshSubjectAndHomepage(selectedSubjectId)
+        } catch (err) { showToast(err.message) } finally { setBusyAction('') }
+      },
+    })
   }
 
   async function onPostAnnouncement(e) {
@@ -2325,17 +2682,25 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
-  async function onDeleteAnnouncement(id) {
+  function onDeleteAnnouncement(id) {
     if (!selectedSubjectId) return
-    if (!window.confirm('Delete this announcement?')) return
-    setBusyAction(`delete-announcement-${id}`)
-    try {
-      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${id}`))
-      if (String(editingAnnouncementId) === String(id)) {
-        onCancelEditAnnouncement()
-      }
-      await loadSubjectDetails(selectedSubjectId)
-    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+    const ann = announcements.find((a) => String(a.id) === String(id))
+    setConfirmDialog({
+      title: `Delete "${ann?.title || 'this announcement'}"?`,
+      message: 'This permanently removes the announcement.',
+      confirmLabel: 'Delete Announcement',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBusyAction(`delete-announcement-${id}`)
+        try {
+          await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${id}`))
+          if (String(editingAnnouncementId) === String(id)) {
+            onCancelEditAnnouncement()
+          }
+          await loadSubjectDetails(selectedSubjectId)
+        } catch (err) { showToast(err.message) } finally { setBusyAction('') }
+      },
+    })
   }
 
   function onOpenPendingActivity(row, activity) {
@@ -2375,7 +2740,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
 
       {/* ERROR */}
       {error && (
-        <div className="mt-4 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <div role="alert" className="mt-4 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           <svg className="mt-0.5 h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           {error}
         </div>
@@ -2447,8 +2812,9 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 type="button"
                 onClick={onStartEditSubject}
                 onDoubleClick={onStartEditSubject}
-                className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-left transition hover:bg-brand-100"
+                className="group flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-left transition hover:bg-brand-100"
                 title="Click to edit subject details"
+                aria-label={`Edit subject: ${selectedSubject.subject_code}`}
               >
                 <span className="text-xs font-bold uppercase tracking-widest text-brand-500">{selectedSubject.subject_code}</span>
                 <span className="h-3.5 w-px bg-brand-200" />
@@ -2456,6 +2822,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 {selectedSubject.term_label && (
                   <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-600">{selectedSubject.term_label}</span>
                 )}
+                <svg className="h-3.5 w-3.5 flex-shrink-0 text-brand-400 opacity-0 transition group-hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4z"/></svg>
               </button>
             )
           )}
@@ -2601,6 +2968,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 gradebook={gradebook}
                 atRiskStudents={atRiskStudents}
                 publishedActivities={gradebookPublishedActivities}
+                selectedSubject={selectedSubject}
                 onOpenPendingActivity={onOpenPendingActivity}
               />
             )}
@@ -2845,6 +3213,17 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
           </div>
 
         </div>
+      )}
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      {confirmDialog && (
+        <ConfirmModal
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
     </main>
   )

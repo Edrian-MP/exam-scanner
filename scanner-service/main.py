@@ -61,10 +61,10 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 PHP_API_BASE      = "http://localhost/exam-scanner/backend/api"
-SERIAL_PORT       = "COM3"
+SERIAL_PORT       = "COM4"
 SERIAL_BAUD       = 9600
-SERIAL_TIMEOUT    = 10      # seconds to wait for SHEET_FED response
-INTER_SHEET_DELAY = 1.5     # seconds between sheets
+SERIAL_TIMEOUT    = 70      # seconds to wait for pre-feed clear + Arduino feed retries
+INTER_SHEET_DELAY = 0     # seconds between sheets
 MAX_UNREADABLE    = 40       # consecutive unreadable sheets before stopping
 STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
 ADF_WAIT_TIMEOUT  = 30      # seconds to wait for user to insert the next paper
@@ -84,6 +84,9 @@ class ScannerState:
     def __init__(self) -> None:
         self.last_scan_at: str | None = None
         self.last_output: str | None = None
+        self.last_batch_session_id: str | None = None
+        self.last_batch_reason: str | None = None
+        self.last_batch_message: str | None = None
         self.active_session_id: str | None = None
         self.waiting_for_paper: bool = False
         self._batch_thread: threading.Thread | None = None
@@ -115,18 +118,24 @@ class ScannerState:
             self._batch_running = True
             self.active_session_id = session_id
             self._batch_thread = None
+            self.last_batch_session_id = None
+            self.last_batch_reason = None
+            self.last_batch_message = None
             return True
 
     def attach_thread(self, thread: threading.Thread) -> None:
         with self._batch_lock:
             self._batch_thread = thread
 
-    def end_batch(self) -> None:
+    def end_batch(self, session_id: str, reason: str, message: str) -> None:
         with self._batch_lock:
             self._batch_running = False
             self.active_session_id = None
             self._batch_thread = None
             self._stop_flag.clear()
+            self.last_batch_session_id = session_id
+            self.last_batch_reason = reason
+            self.last_batch_message = message
 
     def wait_until_idle(self, timeout: float = STOP_WAIT_SECONDS) -> bool:
         with self._batch_lock:
@@ -151,6 +160,9 @@ class ScannerState:
                 "active_session_id": self.active_session_id,
                 "stop_requested": self._stop_flag.is_set(),
                 "waiting_for_paper": self.waiting_for_paper,
+                "last_batch_session_id": self.last_batch_session_id,
+                "last_batch_reason": self.last_batch_reason,
+                "last_batch_message": self.last_batch_message,
             }
 
 
@@ -222,17 +234,30 @@ def scan_sheet_mock(sheet_index: int) -> "Image.Image":
 
 # ── Arduino feeder ────────────────────────────────────────────────────────────
 
-def feed_one_sheet(ser: Any) -> bool:
-    """Send FEED command, wait for SHEET_FED. Returns True on success."""
-    ser.write(b"FEED\n")
+def send_arduino_command(ser: Any, command: str) -> None:
+    """Send a one-way command to the Arduino."""
+    ser.write(f"{command}\n".encode("utf-8"))
+    if hasattr(ser, "flush"):
+        ser.flush()
+
+
+def feed_one_sheet(ser: Any) -> str:
+    """Send FEED command and return the Arduino's final feed status."""
+    if hasattr(ser, "reset_input_buffer"):
+        ser.reset_input_buffer()
+    send_arduino_command(ser, "FEED")
+
     deadline = time.time() + SERIAL_TIMEOUT
     while time.time() < deadline:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if not line:
+            continue
+        logger.info("Arduino feeder: %s", line)
         if line == "SHEET_FED":
-            return True
-        if line == "NO_PAPER":
-            return False
-    return False  # timeout
+            return line
+        if line in {"NO_PAPER", "PAPER_JAM"}:
+            return line
+    return "TIMEOUT"
 
 
 # ── Post sheet result to PHP API ──────────────────────────────────────────────
@@ -263,11 +288,14 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
         sheet_index     = 0
         consecutive_bad = 0
         ser             = None
+        batch_reason    = "stopped"
+        batch_message   = "Batch stopped."
 
         if use_hardware and _SERIAL_AVAILABLE:
             try:
                 ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_TIMEOUT)
                 time.sleep(2)  # wait for Arduino to boot
+                send_arduino_command(ser, "BEEP_START")
             except Exception as exc:
                 logger.warning("Could not open serial port %s: %s", SERIAL_PORT, exc)
                 ser = None
@@ -277,9 +305,17 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
 
             # 1. Feed one sheet (Arduino or no-op in mock mode)
             if ser is not None:
-                paper_ok = feed_one_sheet(ser)
-                if not paper_ok:
+                feed_status = feed_one_sheet(ser)
+                if feed_status == "NO_PAPER":
                     logger.info("No paper in feeder — stopping batch.")
+                    batch_reason = "completed"
+                    batch_message = "No paper in feeder. Batch scan complete."
+                    send_arduino_command(ser, "BEEP_FINISH")
+                    break
+                if feed_status != "SHEET_FED":
+                    logger.error("Feeder failed with status %s - stopping batch.", feed_status)
+                    batch_reason = "feeder_error"
+                    batch_message = f"Feeder failed with status {feed_status}."
                     break
             else:
                 time.sleep(0.2)  # simulate feed delay in mock mode
@@ -312,6 +348,13 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
                             consecutive_bad += 1
                             if consecutive_bad >= MAX_UNREADABLE:
                                 logger.error("Too many scan errors — aborting batch.")
+                                batch_reason = "cancelled_failures"
+                                batch_message = f"Batch cancelled after {MAX_UNREADABLE} consecutive scan failures."
+                            else:
+                                batch_reason = "scan_error"
+                                batch_message = f"Scanner failed while scanning sheet {sheet_index}."
+                            if consecutive_bad >= MAX_UNREADABLE and ser is not None:
+                                send_arduino_command(ser, "BEEP_CANCEL_FAILURES")
                             STATE.waiting_for_paper = False
                             break
                         # ADF empty — wait for the user to insert the next paper
@@ -320,6 +363,8 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
                                 "ADF empty — no paper inserted within %ds — batch complete.",
                                 ADF_WAIT_TIMEOUT,
                             )
+                            batch_reason = "completed"
+                            batch_message = "Scanner ADF reported no more paper. Batch scan complete."
                             STATE.waiting_for_paper = False
                             break
                         if not logged_waiting:
@@ -372,6 +417,10 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
             # 6. Safety cutoff
             if consecutive_bad >= MAX_UNREADABLE:
                 logger.error("Too many unreadable sheets — aborting batch.")
+                batch_reason = "cancelled_failures"
+                batch_message = f"Batch cancelled after {MAX_UNREADABLE} consecutive scan failures."
+                if ser is not None:
+                    send_arduino_command(ser, "BEEP_CANCEL_FAILURES")
                 break
 
             time.sleep(INTER_SHEET_DELAY)
@@ -379,7 +428,7 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
     finally:
         if ser is not None:
             ser.close()
-        STATE.end_batch()
+        STATE.end_batch(session_id, batch_reason, batch_message)
         logger.info("Batch scan finished. session=%s", session_id)
         if pythoncom is not None:
             pythoncom.CoUninitialize()
@@ -426,6 +475,9 @@ class Handler(BaseHTTPRequestHandler):
                         "active_session_id": state_snapshot["active_session_id"],
                         "stop_requested":    state_snapshot["stop_requested"],
                         "waiting_for_paper": state_snapshot["waiting_for_paper"],
+                        "last_batch_session_id": state_snapshot["last_batch_session_id"],
+                        "last_batch_reason": state_snapshot["last_batch_reason"],
+                        "last_batch_message": state_snapshot["last_batch_message"],
                         "driver":            "wia+arduino",
                         "last_scan_at":      STATE.last_scan_at,
                         "last_output":       STATE.last_output,
