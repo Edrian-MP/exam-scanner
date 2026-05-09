@@ -164,7 +164,7 @@ function useImportClasslist({ subjectId, educatorId, onDone }) {
 /* ─── form defaults ─────────────────────────────────── */
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
 const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
-const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', max_score: '', due_at: '', publish_status: 'draft' }
+const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', exam_code: '', max_score: '', due_at: '', publish_status: 'draft' }
 const emptyAnnouncementForm = { title: '', body: '' }
 
 /* ─── utils ─────────────────────────────────────────── */
@@ -1286,6 +1286,24 @@ function ActivitiesTab({
               <option value="quiz">Quiz</option>
               <option value="activity">Activity</option>
             </SelectInput>
+          </Field>
+          <Field label="Exam Code" hint={isCreateMode ? 'optional' : undefined}>
+            <TextInput
+              value={activityForm.exam_code || ''}
+              onChange={(e) => setActivityForm((p) => ({
+                ...p,
+                exam_code: e.target.value.replace(/\D/g, '').slice(0, 6),
+              }))}
+              inputMode="numeric"
+              maxLength={6}
+              pattern="[0-9]{6}"
+              placeholder={isCreateMode ? 'Auto-generate if blank' : '000000'}
+              required={!isCreateMode}
+              title="Exam code must be exactly 6 digits."
+            />
+            {isCreateMode && (
+              <p className="text-[11px] text-slate-400">Leave blank to auto-generate.</p>
+            )}
           </Field>
           <Field label="Due Date" hint="optional">
             <TextInput
@@ -2581,6 +2599,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
         ...activityForm,
         title: resolvedTitle,
         exam_id: examId,
+        exam_code: String(activityForm.exam_code || '').trim(),
         max_score: Number(totalItems || activityForm.max_score || 100),
       })
       setActivityForm(emptyActivityForm)
@@ -2595,6 +2614,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
       title: activity.title || '',
       activity_type: activity.activity_type || 'exam',
       exam_id: activity.exam_id ? String(activity.exam_id) : '',
+      exam_code: activity.exam_code || '',
       max_score: activity.max_score || 100,
       due_at: activity.due_at ? String(activity.due_at).slice(0, 16) : '',
       publish_status: activity.publish_status || 'draft',
@@ -2619,6 +2639,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
       await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${editingActivityId}`), {
         ...activityForm,
         exam_id: activityForm.exam_id ? Number(activityForm.exam_id) : null,
+        exam_code: String(activityForm.exam_code || '').trim(),
         max_score: totalItems,
       })
       onCancelEditActivity()

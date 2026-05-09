@@ -94,12 +94,14 @@ CREATE TABLE IF NOT EXISTS subject_activities (
   title VARCHAR(180) NOT NULL,
   activity_type VARCHAR(24) NOT NULL DEFAULT 'exam',
   exam_id INT NULL,
+  exam_code CHAR(6) NULL,
   max_score INT NOT NULL DEFAULT 100,
   due_at DATETIME NULL,
   publish_status VARCHAR(16) NOT NULL DEFAULT 'draft',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_subject_activities_subject_id (subject_id),
   INDEX idx_subject_activities_exam_id (exam_id),
+  UNIQUE KEY uq_exam_code (exam_code),
   CONSTRAINT fk_subject_activities_subject FOREIGN KEY (subject_id) REFERENCES subjects(id)
     ON DELETE CASCADE
     ON UPDATE CASCADE,

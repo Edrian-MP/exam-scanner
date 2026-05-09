@@ -178,8 +178,8 @@ function ViewModal({ sheet, onClose }) {
   )
 }
 
-/* ── Fix modal (editable) ───────────────────────────────────────────────────── */
-function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
+/* ── Edit modal (editable) ──────────────────────────────────────────────────── */
+function EditModal({ sheet, answerKeyMap, onSave, onClose }) {
   const itemCount = Number(sheet.max_score || 0) || sheet.raw_answers?.length || 30
   const [studentCode, setStudentCode] = useState(sheet.student_code ?? '')
   const [examCode, setExamCode] = useState(sheet.exam_code ?? '')
@@ -189,11 +189,15 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
   })
 
   const dialogRef = useFocusTrap(true)
-  const titleId = 'fix-dialog-title'
+  const titleId = 'edit-dialog-title'
 
   const keyArr = answerKeyMap[examCode] ?? []
   const scoringKey = keyArr.slice(0, itemCount)
   const hasKey = scoringKey.some(Boolean)
+  const originalAnswers = Array.from({ length: itemCount }, (_, i) => sheet.raw_answers?.[i] ?? '')
+  const answersChanged = answers.some((ans, i) => ans !== originalAnswers[i])
+  const examCodeChanged = examCode.trim() !== String(sheet.exam_code ?? '').trim()
+  const scoreNeedsRecalc = examCodeChanged || answersChanged
   const score = hasKey
     ? answers.reduce((acc, ans, i) => {
         if (ans && scoringKey[i] && ans === scoringKey[i]) return acc + 1
@@ -208,7 +212,7 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
       student_code: studentCode.trim(),
       exam_code: examCode.trim(),
       raw_answers: answers,
-      score: score ?? sheet.score,
+      score: hasKey ? score : (scoreNeedsRecalc ? null : sheet.score),
       max_score: maxScore,
       status: 'ok',
       flag_reasons: [],
@@ -227,7 +231,7 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
       >
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div>
-            <p id={titleId} className="text-sm font-bold text-slate-800">Fix Sheet #{sheet.sheet_index}</p>
+            <p id={titleId} className="text-sm font-bold text-slate-800">Edit Sheet #{sheet.sheet_index}</p>
             {sheet.flag_reasons?.length > 0 && (
               <p className="mt-0.5 text-xs text-amber-700">{sheet.flag_reasons.join(' · ')}</p>
             )}
@@ -255,9 +259,9 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label htmlFor="fix-student-code" className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">Student Code</label>
+              <label htmlFor="edit-student-code" className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">Student Code</label>
               <input
-                id="fix-student-code"
+                id="edit-student-code"
                 value={studentCode}
                 onChange={(e) => setStudentCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 maxLength={6}
@@ -266,9 +270,9 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
               />
             </div>
             <div className="space-y-1">
-              <label htmlFor="fix-exam-code" className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">Exam Code</label>
+              <label htmlFor="edit-exam-code" className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">Exam Code</label>
               <input
-                id="fix-exam-code"
+                id="edit-exam-code"
                 value={examCode}
                 onChange={(e) => setExamCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 maxLength={6}
@@ -319,7 +323,7 @@ function FixModal({ sheet, answerKeyMap, onSave, onClose }) {
             disabled={!studentCode || !examCode}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Mark as OK &amp; Save
+            Save Changes
           </button>
         </div>
       </div>
@@ -338,7 +342,7 @@ export default function ScanReview({
   onStartNew,
 }) {
   const [viewSheet, setViewSheet] = useState(null)
-  const [fixSheet, setFixSheet] = useState(null)
+  const [editSheet, setEditSheet] = useState(null)
   const [commitSummary, setCommitSummary] = useState(null)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -478,14 +482,12 @@ export default function ScanReview({
                 <td className="px-4 py-2.5 text-right">
                   <div className="flex justify-end gap-1.5">
                     <GhostBtn onClick={() => setViewSheet(sheet)}>View</GhostBtn>
-                    {sheet.status === 'flagged' && (
-                      <GhostBtn
-                        onClick={() => setFixSheet(sheet)}
-                        className="border-amber-200 text-amber-700 hover:bg-amber-50"
-                      >
-                        Fix
-                      </GhostBtn>
-                    )}
+                    <GhostBtn
+                      onClick={() => setEditSheet(sheet)}
+                      className={sheet.status === 'flagged' ? 'border-amber-200 text-amber-700 hover:bg-amber-50' : ''}
+                    >
+                      Edit
+                    </GhostBtn>
                   </div>
                 </td>
               </tr>
@@ -518,15 +520,15 @@ export default function ScanReview({
       {viewSheet && (
         <ViewModal sheet={viewSheet} onClose={() => setViewSheet(null)} />
       )}
-      {fixSheet && (
-        <FixModal
-          sheet={fixSheet}
+      {editSheet && (
+        <EditModal
+          sheet={editSheet}
           answerKeyMap={answerKeyMap}
           onSave={(updated) => {
             onUpdateSheet(updated)
-            setFixSheet(null)
+            setEditSheet(null)
           }}
-          onClose={() => setFixSheet(null)}
+          onClose={() => setEditSheet(null)}
         />
       )}
       {showDiscardConfirm && (
