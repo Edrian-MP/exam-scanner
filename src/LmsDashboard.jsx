@@ -2,6 +2,7 @@
 import ScanReview from './ScanReview'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import * as XLSX from 'xlsx'
+import { useOSK } from './hooks/useOSK'
 
 const MANUAL_ANSWER_GRID_STYLE = {
   gridTemplateRows: 'repeat(5, minmax(2.75rem, auto))',
@@ -164,7 +165,7 @@ function useImportClasslist({ subjectId, educatorId, onDone }) {
 /* ─── form defaults ─────────────────────────────────── */
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
 const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
-const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', exam_code: '', max_score: '', due_at: '', publish_status: 'draft' }
+const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', exam_code: '', max_score: '', due_at: '', grading_period: '', publish_status: 'draft' }
 const emptyAnnouncementForm = { title: '', body: '' }
 
 /* ─── utils ─────────────────────────────────────────── */
@@ -200,8 +201,10 @@ function formatStudentFullName(givenName = '', middleName = '', surname = '') {
   const given = String(givenName || '').trim()
   const middle = String(middleName || '').trim()
   const sur = String(surname || '').trim()
-  const middleInitial = middle ? `${middle[0].toUpperCase()}.` : ''
-  return [given, middleInitial, sur].filter(Boolean).join(' ') || sur || given || 'Unnamed Student'
+  const middleInitial = middle ? ` ${middle[0].toUpperCase()}.` : ''
+  const givenPart = given ? `${given}${middleInitial}` : ''
+  if (sur && givenPart) return `${sur}, ${givenPart}`
+  return sur || givenPart || 'Unnamed Student'
 }
 
 function safeFilenamePart(value = '', fallback = 'subject') {
@@ -252,59 +255,105 @@ function createExportWorksheet(rows, subject) {
   return worksheet
 }
 
-function exportGradebookWorkbook({ gradebook, publishedActivities, subject }) {
+function exportGradebookWorkbook({ gradebook, publishedActivities, gradeWeights = {}, subject }) {
   if (!Array.isArray(gradebook) || gradebook.length === 0) return
 
   const activities = Array.isArray(publishedActivities) ? publishedActivities : []
-  const summaryRows = gradebook.map((row) => {
-    const summary = {
+  const wwActs = activities.filter((a) => a.activity_type === 'quiz')
+  const ptActs = activities.filter((a) => a.activity_type === 'activity')
+  const qaActs = activities.filter((a) => a.activity_type === 'exam')
+
+  const wwW = Number(gradeWeights.written_work || 0)
+  const ptW = Number(gradeWeights.performance_task || 0)
+  const qaW = Number(gradeWeights.quarterly_assessment || 0)
+
+  // ── Build data rows ───────────────────────────────────────────────
+  const dataRows = gradebook.map((row) => {
+    const details = Array.isArray(row.published_details) ? row.published_details : []
+    const findDetail = (aid) => details.find((d) => String(d.activity_id) === String(aid))
+
+    const r = {
       'Student Code': row.student_code || '',
-      Surname: row.surname || '',
+      'Surname': row.surname || '',
       'Given Name': row.given_name || '',
-      'Middle Name': row.middle_name || '',
-      'Full Name': formatStudentFullName(row.given_name, row.middle_name, row.surname),
-      Completed: Number(row.completed_activities || 0),
-      'Published Activities': Number(row.published_activities || 0),
-      'Average Percent': row.average_percent ?? '',
     }
 
-    activities.forEach((activity, index) => {
-      const total = getActivityTotal(activity)
-      const title = String(activity.title || `Activity ${index + 1}`).trim()
-      const header = `Activity ${index + 1}: ${title}${total ? ` (${total} pts)` : ''}`
-      const detail = findGradebookActivityDetail(row, activity)
-      summary[header] = formatSummaryActivityScore(detail)
+    wwActs.forEach((act, i) => {
+      const d = findDetail(act.activity_id)
+      r[`WW${i + 1} (/${act.max_score})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
     })
+    if (wwActs.length > 0) {
+      r[`WW Score (%)`] = row.ww_component_pct !== null && row.ww_component_pct !== undefined ? Number(row.ww_component_pct) : ''
+      r[`WW Contribution (${wwW}%)`] = row.ww_component_pct !== null ? Math.round(Number(row.ww_component_pct) * (wwW / 100) * 100) / 100 : ''
+    }
 
-    return summary
+    ptActs.forEach((act, i) => {
+      const d = findDetail(act.activity_id)
+      r[`PT${i + 1} (/${act.max_score})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
+    })
+    if (ptActs.length > 0) {
+      r[`PT Score (%)`] = row.pt_component_pct !== null && row.pt_component_pct !== undefined ? Number(row.pt_component_pct) : ''
+      r[`PT Contribution (${ptW}%)`] = row.pt_component_pct !== null ? Math.round(Number(row.pt_component_pct) * (ptW / 100) * 100) / 100 : ''
+    }
+
+    qaActs.forEach((act, i) => {
+      const d = findDetail(act.activity_id)
+      const total = act.total_items ?? act.max_score
+      r[`QA${i + 1} (/${total})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
+    })
+    if (qaActs.length > 0) {
+      r[`QA Score (%)`] = row.qa_component_pct !== null && row.qa_component_pct !== undefined ? Number(row.qa_component_pct) : ''
+      r[`QA Contribution (${qaW}%)`] = row.qa_component_pct !== null ? Math.round(Number(row.qa_component_pct) * (qaW / 100) * 100) / 100 : ''
+    }
+
+    r['Final Grade (%)'] = row.final_grade !== null && row.final_grade !== undefined ? Number(row.final_grade) : ''
+    return r
   })
 
+  // ── Class average row ─────────────────────────────────────────────
+  if (dataRows.length > 0) {
+    const numKeys = Object.keys(dataRows[0]).filter((k) => !['Student Code', 'Surname', 'Given Name'].includes(k))
+    const avg = {}
+    avg['Student Code'] = ''
+    avg['Surname'] = 'CLASS AVERAGE'
+    avg['Given Name'] = ''
+    numKeys.forEach((k) => {
+      const vals = dataRows.map((r) => r[k]).filter((v) => v !== '' && v !== null && v !== undefined && !Number.isNaN(Number(v)))
+      avg[k] = vals.length > 0 ? Math.round((vals.reduce((s, v) => s + Number(v), 0) / vals.length) * 100) / 100 : ''
+    })
+    dataRows.push(avg)
+  }
+
+  const workbook = XLSX.utils.book_new()
+  const summarySheet = XLSX.utils.json_to_sheet(dataRows)
+
+  // Column widths
+  const wscols = Object.keys(dataRows[0] || {}).map((k) => ({ wch: k.length < 12 ? 12 : k.length + 2 }))
+  summarySheet['!cols'] = wscols
+
+  XLSX.utils.book_append_sheet(workbook, summarySheet, 'Gradebook Summary')
+
+  // ── Activity Details sheet ────────────────────────────────────────
   const detailRows = gradebook.flatMap((row) => {
     const fullName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
+    const details = Array.isArray(row.published_details) ? row.published_details : []
     return activities.map((activity, index) => {
-      const detail = findGradebookActivityDetail(row, activity) || {}
+      const detail = details.find((d) => String(d.activity_id) === String(activity.activity_id)) || {}
       const total = getActivityTotal(detail) || getActivityTotal(activity)
       return {
         'Student Code': row.student_code || '',
         'Full Name': fullName,
-        'Activity No.': index + 1,
-        'Activity Title': activity.title || detail.title || '',
-        Type: activity.activity_type || detail.activity_type || '',
-        Status: detail.status || 'posted',
-        Score: detail.status === 'checked' ? Number(detail.score ?? 0) : 0,
-        Total: total,
-        'Percent': detail.percent ?? '',
+        'Component': ACTIVITY_TYPE_LABELS[activity.activity_type] ?? activity.activity_type,
+        'No.': index + 1,
+        'Activity Title': activity.title || '',
+        'Quarter': activity.grading_period || '',
+        'Status': detail.status || 'posted',
+        'Score': detail.score !== null && detail.score !== undefined ? Number(detail.score) : '',
+        'Max Score': total || '',
       }
     })
   })
-
-  const workbook = XLSX.utils.book_new()
-  const summarySheet = createExportWorksheet(summaryRows, subject)
-  const detailsSheet = createExportWorksheet(detailRows.length ? detailRows : [
-    { Note: 'No published activities for this gradebook.' },
-  ], subject)
-
-  XLSX.utils.book_append_sheet(workbook, summarySheet, 'Gradebook Summary')
+  const detailsSheet = createExportWorksheet(detailRows.length ? detailRows : [{ Note: 'No published activities.' }], subject)
   XLSX.utils.book_append_sheet(workbook, detailsSheet, 'Activity Details')
 
   const subjectCode = safeFilenamePart(subject?.subject_code || subject?.title, 'subject')
@@ -348,6 +397,19 @@ function normalizeStoredAnswerKey(raw = '') {
     .filter(Boolean)
     .join('|')
 }
+
+/* ─── activity type labels (DB value → display) ────── */
+const ACTIVITY_TYPE_LABELS = {
+  exam:     'Exam',
+  quiz:     'Written Work',
+  activity: 'Performance Task',
+}
+const ACTIVITY_TYPE_GROUP = {
+  exam:     'qa',
+  quiz:     'ww',
+  activity: 'pt',
+}
+const GRADING_PERIODS = ['Q1', 'Q2', 'Q3', 'Q4']
 
 /* ─── design tokens ────────────────────────────────── */
 const TAB_META = {
@@ -419,9 +481,15 @@ function Field({ label, hint, children, htmlFor: explicitFor }) {
   )
 }
 
-function TextInput({ className = '', ...props }) {
+function TextInput({ className = '', onFocus: callerOnFocus, ...props }) {
+  const { onFocus: oskOnFocus } = useOSK()
+  function handleFocus(e) {
+    oskOnFocus?.(e)
+    callerOnFocus?.(e)
+  }
   return (
     <input
+      onFocus={handleFocus}
       className={`w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-300 transition-all duration-150 hover:border-slate-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 ${className}`}
       {...props}
     />
@@ -1014,78 +1082,104 @@ function RosterTab({
   onImportDone,
 }) {
   const a = TAB_META.roster.accent
+  const [showEnrollForm, setShowEnrollForm] = useState(false)
+
+  // Auto-close enroll panel when the form resets after a successful submission
+  const prevStudentCode = useRef(studentForm.student_code)
+  useEffect(() => {
+    if (prevStudentCode.current !== '' && studentForm.student_code === '') {
+      setShowEnrollForm(false)
+    }
+    prevStudentCode.current = studentForm.student_code
+  }, [studentForm.student_code])
+
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
+    <div className="flex min-h-[520px] flex-col">
 
-      {/* LEFT: form */}
-      <div className="flex flex-col gap-5 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-6 py-4 dark:border-slate-700/60">
         <div>
-          <h3 className="text-base font-bold text-slate-800">Enroll a Student</h3>
-          <p className="mt-0.5 text-xs text-slate-500">Add students to this subject's class list.</p>
+          <h3 className="text-base font-bold text-slate-800 dark:text-slate-100">Enrolled Students</h3>
+          <p className="text-xs text-slate-400">{students.length} {students.length === 1 ? 'student' : 'students'}</p>
         </div>
-
-        <ImportClasslistButton
-          subjectId={subjectId}
-          educatorId={educatorId}
-          onDone={onImportDone}
-        />
-
-        <form onSubmit={onAddStudent} className="flex flex-1 flex-col gap-4">
-          <Field label="Student ID / Code">
-            <TextInput required value={studentForm.student_code}
-              onChange={(e) => setStudentForm((p) => ({ ...p, student_code: e.target.value }))}
-              placeholder="e.g. 2021-00142" />
-          </Field>
-          <Field label="Given Name">
-            <TextInput required value={studentForm.given_name}
-              onChange={(e) => setStudentForm((p) => ({ ...p, given_name: e.target.value }))}
-              placeholder="Juan" />
-          </Field>
-          <Field label="Middle Name">
-            <TextInput value={studentForm.middle_name}
-              onChange={(e) => setStudentForm((p) => ({ ...p, middle_name: e.target.value }))}
-              placeholder="Santos" />
-          </Field>
-          <Field label="Surname">
-            <TextInput required value={studentForm.surname}
-              onChange={(e) => setStudentForm((p) => ({ ...p, surname: e.target.value }))}
-              placeholder="Dela Cruz" />
-          </Field>
-          <Field label="Email" hint="optional">
-            <TextInput type="email" value={studentForm.email}
-              onChange={(e) => setStudentForm((p) => ({ ...p, email: e.target.value }))}
-              placeholder="juan@school.edu" />
-          </Field>
-          <div className="mt-auto pt-2">
-            <SubmitBtn disabled={busyAction === 'student'} colorClass={a.btn}>
-              {busyAction === 'student' ? <><SpinIcon /> Enrolling…</> : 'Enroll Student'}
-            </SubmitBtn>
-          </div>
-        </form>
-
-        <div className="border-t border-slate-100 pt-4">
-          <DangerBtn onClick={onDeleteSubject} disabled={busyAction === 'delete-subject'} className="w-full justify-center">
-            {busyAction === 'delete-subject' ? <><SpinIcon /> Deleting…</> : <><TrashIcon /> Delete Subject</>}
-          </DangerBtn>
+        <div className="flex items-center gap-2">
+          <ImportClasslistButton subjectId={subjectId} educatorId={educatorId} onDone={onImportDone} />
+          <button
+            type="button"
+            onClick={() => setShowEnrollForm((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+              showEnrollForm
+                ? 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                : `border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-700/70 dark:bg-sky-900/25 dark:text-sky-300`
+            }`}
+          >
+            {showEnrollForm ? (
+              <><XIcon /> Close</>
+            ) : (
+              <>
+                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
+                Enroll Student
+              </>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* RIGHT: list */}
-      <div className="flex flex-col gap-4 p-6 xl:h-0 xl:min-h-full xl:overflow-hidden">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">Enrolled Students</h3>
-          <span className="text-xs text-slate-400">
-            {students.length} {students.length === 1 ? 'student' : 'students'}
-          </span>
+      {/* Collapsible enroll form */}
+      <div className={`overflow-hidden border-b border-slate-100 transition-all duration-300 ease-in-out dark:border-slate-700/60 ${showEnrollForm ? 'max-h-[600px] opacity-100' : 'max-h-0 opacity-0'}`}>
+        <div className="bg-sky-50/50 px-6 py-5 dark:bg-sky-900/10">
+          <p className="mb-4 text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">New Student</p>
+          <form onSubmit={onAddStudent}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Student ID / Code">
+                <TextInput required value={studentForm.student_code}
+                  onChange={(e) => setStudentForm((p) => ({ ...p, student_code: e.target.value }))}
+                  placeholder="e.g. 2021-00142" />
+              </Field>
+              <Field label="Given Name">
+                <TextInput required value={studentForm.given_name}
+                  onChange={(e) => setStudentForm((p) => ({ ...p, given_name: e.target.value }))}
+                  placeholder="Juan" />
+              </Field>
+              <Field label="Middle Name">
+                <TextInput value={studentForm.middle_name}
+                  onChange={(e) => setStudentForm((p) => ({ ...p, middle_name: e.target.value }))}
+                  placeholder="Santos" />
+              </Field>
+              <Field label="Surname">
+                <TextInput required value={studentForm.surname}
+                  onChange={(e) => setStudentForm((p) => ({ ...p, surname: e.target.value }))}
+                  placeholder="Dela Cruz" />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Email" hint="optional">
+                  <TextInput type="email" value={studentForm.email}
+                    onChange={(e) => setStudentForm((p) => ({ ...p, email: e.target.value }))}
+                    placeholder="juan@school.edu" />
+                </Field>
+              </div>
+            </div>
+            <div className="mt-4 flex items-center gap-2">
+              <SubmitBtn disabled={busyAction === 'student'} colorClass={a.btn}>
+                {busyAction === 'student' ? <><SpinIcon /> Enrolling…</> : 'Enroll Student'}
+              </SubmitBtn>
+              <GhostBtn type="button" onClick={() => setShowEnrollForm(false)}>
+                Cancel
+              </GhostBtn>
+            </div>
+          </form>
         </div>
+      </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1">
+      {/* Student list */}
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="space-y-2">
           {students.length ? students.map((s) => (
             <div key={s.id}
-              className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
+              className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm dark:border-slate-700/60 dark:bg-slate-800/40 dark:hover:bg-slate-800"
             >
               <div className="flex min-w-0 flex-1 items-start gap-3">
-                <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-sky-100 text-[11px] font-bold text-sky-600">
+                <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-sky-100 text-[11px] font-bold text-sky-600 dark:bg-sky-900/40 dark:text-sky-300">
                   {initials(`${s.given_name || ''} ${s.surname || ''}`.trim() || s.surname)}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -1120,19 +1214,17 @@ function RosterTab({
                     </form>
                   ) : (
                     <>
-                      <p className="truncate text-sm font-semibold text-slate-800">
-                        {[s.given_name, s.middle_name, s.surname].filter(Boolean).join(' ')}
+                      <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        {formatStudentFullName(s.given_name, s.middle_name, s.surname)}
                       </p>
-                      <p className="text-[11px] text-slate-400 font-mono">{s.student_code}</p>
+                      <p className="font-mono text-[11px] text-slate-400">{s.student_code}</p>
                     </>
                   )}
                 </div>
               </div>
               {String(editingStudentId) !== String(s.id) && (
                 <div className="flex items-center gap-2">
-                  <GhostBtn type="button" onClick={() => {
-                    onStartEditStudent(s)
-                  }}>
+                  <GhostBtn type="button" onClick={() => onStartEditStudent(s)}>
                     <PenIcon />
                   </GhostBtn>
                   <GhostBtn onClick={() => onRemoveStudent(s.id)} disabled={busyAction === `remove-student-${s.id}`}>
@@ -1142,9 +1234,16 @@ function RosterTab({
               )}
             </div>
           )) : (
-            <EmptyState icon={<UsersIcon size="lg" />} title="No students enrolled yet" description="Use the form to enroll your first student." />
+            <EmptyState icon={<UsersIcon size="lg" />} title="No students enrolled yet" description="Click '+ Enroll Student' above to add your first student." />
           )}
         </div>
+      </div>
+
+      {/* Delete Subject — bottom, de-emphasized */}
+      <div className="border-t border-slate-100 px-6 py-4 dark:border-slate-700/60">
+        <DangerBtn onClick={onDeleteSubject} disabled={busyAction === 'delete-subject'}>
+          {busyAction === 'delete-subject' ? <><SpinIcon /> Deleting…</> : <><TrashIcon /> Delete Subject</>}
+        </DangerBtn>
       </div>
     </div>
   )
@@ -1177,28 +1276,84 @@ function ActivitiesTab({
   const isUploadedAnswerKeyLocked = isCreateMode && hasAttachment && uploadAnswerCount > 0
   const activityPdfInputRef = useRef(null)
   const [showUploadDetails, setShowUploadDetails] = useState(false)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+
+  // Form panel is visible when explicitly creating or when an edit is active
+  const showFormPanel = showCreateForm || Boolean(editingActivityId)
+
+  // Total Score field: read-only (from PDF) for exam with attachment, editable otherwise
+  const isExamWithPdf = activityForm.activity_type === 'exam' && hasAttachment
+  const totalScoreReadOnly = isExamWithPdf
+  const totalScoreValue = isExamWithPdf
+    ? (scan?.examForm?.total_items || '')
+    : (activityForm.max_score || '')
 
   useEffect(() => {
-    if (hasAttachment) {
-      setShowUploadDetails(true)
-    } else {
-      setShowUploadDetails(false)
-    }
+    if (hasAttachment) setShowUploadDetails(true)
+    else setShowUploadDetails(false)
   }, [hasAttachment])
 
+  // Auto-close create form when the parent resets activityForm after successful save
+  const prevActivityTitle = useRef(activityForm.title)
+  useEffect(() => {
+    if (prevActivityTitle.current !== '' && activityForm.title === '') {
+      setShowCreateForm(false)
+    }
+    prevActivityTitle.current = activityForm.title
+  }, [activityForm.title])
+
+  function handleCancelForm() {
+    if (editingActivityId) onCancelEditActivity()
+    setShowCreateForm(false)
+  }
+
+  function handleToggleCreate() {
+    if (showFormPanel) {
+      handleCancelForm()
+    } else {
+      setShowCreateForm(true)
+    }
+  }
+
   return (
-    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
+    <div className="flex min-h-[520px] flex-col">
 
-      {/* LEFT: form */}
-      <div className="flex flex-col gap-5 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-6 py-4 dark:border-slate-700/60">
         <div>
-          <h3 className="text-base font-bold text-slate-800">{editingActivityId ? 'Edit Activity' : 'New Activity'}</h3>
+          <h3 className="text-base font-bold text-slate-800 dark:text-slate-100">Activities</h3>
+          <p className="text-xs text-slate-400">{activities.length} {activities.length === 1 ? 'activity' : 'activities'}</p>
         </div>
+        <button
+          type="button"
+          onClick={handleToggleCreate}
+          className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+            showFormPanel
+              ? 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300'
+              : `border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-700/70 dark:bg-violet-900/25 dark:text-violet-300`
+          }`}
+        >
+          {showFormPanel ? (
+            <><XIcon /> Close</>
+          ) : (
+            <>
+              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
+              New Activity
+            </>
+          )}
+        </button>
+      </div>
 
-        <form onSubmit={editingActivityId ? onEditActivity : onCreateActivity} className="flex flex-1 flex-col gap-4">
-          {scan?.onExamPdfUpload && isCreateMode && (
-            <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
-              <div className="space-y-3">
+      {/* Collapsible activity form */}
+      <div className={`overflow-hidden border-b border-slate-100 transition-all duration-300 ease-in-out dark:border-slate-700/60 ${showFormPanel ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
+        <div className="bg-violet-50/40 px-6 py-5 dark:bg-violet-900/10">
+          <p className="mb-4 text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
+            {editingActivityId ? 'Edit Activity' : 'New Activity'}
+          </p>
+          <form onSubmit={editingActivityId ? onEditActivity : onCreateActivity}>
+            {/* Row 1: Upload PDF | Activity Title | Total Score | Type */}
+            <div className={`grid gap-3 ${scan?.onExamPdfUpload && isCreateMode ? 'grid-cols-1 sm:grid-cols-[1fr_minmax(0,1.5fr)_minmax(72px,0.7fr)_minmax(148px,1fr)]' : 'grid-cols-1 sm:grid-cols-[minmax(0,1.5fr)_minmax(72px,0.7fr)_minmax(148px,1fr)]'}`}>
+              {scan?.onExamPdfUpload && isCreateMode && (
                 <Field label="Upload PDF" hint="optional">
                   <div className="relative">
                     <input
@@ -1206,7 +1361,7 @@ function ActivitiesTab({
                       type="file"
                       accept="application/pdf,.pdf"
                       onChange={onActivityExamPdfUpload}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-10 text-sm shadow-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-8 text-sm shadow-sm outline-none file:mr-2 file:rounded-lg file:border-0 file:bg-brand-50 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-brand-700"
                     />
                     {activityAttachmentName && (
                       <button
@@ -1215,9 +1370,7 @@ function ActivitiesTab({
                         aria-label="Remove file"
                         onClick={() => {
                           onRemoveActivityExamPdf()
-                          if (activityPdfInputRef.current) {
-                            activityPdfInputRef.current.value = ''
-                          }
+                          if (activityPdfInputRef.current) activityPdfInputRef.current.value = ''
                         }}
                         className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
                       >
@@ -1226,166 +1379,203 @@ function ActivitiesTab({
                     )}
                   </div>
                 </Field>
-                {hasAttachment && (
-                  <div className="space-y-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowUploadDetails((prev) => !prev)}
-                      className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
-                    >
-                      <span>{showUploadDetails ? 'Hide details' : 'Show details'}</span>
-                      <span className={`transition ${showUploadDetails ? 'rotate-180' : ''}`}>⌄</span>
-                    </button>
-                    {showUploadDetails && (
-                      <div className="space-y-3">
-                        <Field label="Total Items">
-                          <TextInput
-                            type="number"
-                            min={1}
-                            max={200}
-                            value={scan.examForm?.total_items || ''}
-                            onChange={(e) => scan.onTotalItemsChange(e.target.value)}
-                            placeholder="Leave blank when no template is needed"
-                          />
-                        </Field>
-                        <Field label="Answer Key">
-                          <TextareaInput
-                            ref={scan.answerKeyRef}
-                            value={scan.answerKeyDisplay || ''}
-                            onChange={() => {}}
-                            onKeyDown={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyKeyDown}
-                            onPaste={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyPaste}
-                            className="h-28 font-mono text-sm leading-6"
-                            placeholder="1. A"
-                            readOnly={isUploadedAnswerKeyLocked}
-                          />
-                          {isUploadedAnswerKeyLocked && (
-                            <p className="text-[11px] text-slate-400">Imported from upload (view only).</p>
-                          )}
-                        </Field>
-                      </div>
-                    )}
+              )}
+              <Field label="Activity Title" hint={shouldAutoTitle ? 'auto from file' : undefined}>
+                <TextInput
+                  required
+                  value={activityForm.title}
+                  onChange={(e) => setActivityForm((p) => ({ ...p, title: e.target.value }))}
+                  placeholder="e.g. Midterm Examination"
+                  readOnly={shouldAutoTitle}
+                />
+              </Field>
+              <Field label="Total Score" hint={totalScoreReadOnly ? 'from PDF' : undefined}>
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={999}
+                  required={!totalScoreReadOnly}
+                  value={totalScoreValue}
+                  readOnly={totalScoreReadOnly}
+                  onChange={totalScoreReadOnly ? undefined : (e) =>
+                    setActivityForm((p) => ({ ...p, max_score: e.target.value }))
+                  }
+                  placeholder="100"
+                  className={totalScoreReadOnly ? 'bg-slate-50 text-slate-400 cursor-default dark:bg-slate-800 dark:text-slate-500' : undefined}
+                />
+              </Field>
+              <Field label="Type">
+                <SelectInput value={activityForm.activity_type}
+                  onChange={(e) => setActivityForm((p) => ({ ...p, activity_type: e.target.value }))}>
+                  <option value="exam">Exam</option>
+                  <option value="quiz">Written Work</option>
+                  <option value="activity">Performance Task</option>
+                </SelectInput>
+              </Field>
+            </div>
+
+            {/* PDF details (Total Items + Answer Key) — expands below row 1 when file attached */}
+            {scan?.onExamPdfUpload && isCreateMode && hasAttachment && (
+              <div className="mt-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3">
+                <button
+                  type="button"
+                  onClick={() => setShowUploadDetails((prev) => !prev)}
+                  className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                >
+                  <span>{showUploadDetails ? 'Hide PDF details' : 'Show PDF details'}</span>
+                  <span className={`transition ${showUploadDetails ? 'rotate-180' : ''}`}>⌄</span>
+                </button>
+                {showUploadDetails && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <Field label="Total Items">
+                      <TextInput
+                        type="number" min={1} max={200}
+                        value={scan.examForm?.total_items || ''}
+                        onChange={(e) => scan.onTotalItemsChange(e.target.value)}
+                        placeholder="Leave blank when no template is needed"
+                      />
+                    </Field>
+                    <Field label="Answer Key">
+                      <TextareaInput
+                        ref={scan.answerKeyRef}
+                        value={scan.answerKeyDisplay || ''}
+                        onChange={() => {}}
+                        onKeyDown={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyKeyDown}
+                        onPaste={isUploadedAnswerKeyLocked ? undefined : scan.onAnswerKeyPaste}
+                        className="h-28 font-mono text-sm leading-6"
+                        placeholder="1. A"
+                        readOnly={isUploadedAnswerKeyLocked}
+                      />
+                      {isUploadedAnswerKeyLocked && (
+                        <p className="text-[11px] text-slate-400">Imported from upload (view only).</p>
+                      )}
+                    </Field>
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Row 2: Grading Period | Exam Code | Due Date | Status */}
+            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Field label="Grading Period">
+                <SelectInput
+                  value={activityForm.grading_period}
+                  onChange={(e) => setActivityForm((p) => ({ ...p, grading_period: e.target.value }))}
+                  required
+                >
+                  <option value="">Quarter…</option>
+                  {GRADING_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+                </SelectInput>
+              </Field>
+              <Field label="Exam Code" hint={isCreateMode ? 'optional' : undefined}>
+                <TextInput
+                  value={activityForm.exam_code || ''}
+                  onChange={(e) => setActivityForm((p) => ({
+                    ...p,
+                    exam_code: e.target.value.replace(/\D/g, '').slice(0, 6),
+                  }))}
+                  inputMode="numeric"
+                  maxLength={6}
+                  pattern="[0-9]{6}"
+                  placeholder={isCreateMode ? 'Auto-gen' : '000000'}
+                  required={!isCreateMode}
+                  title="Exam code must be exactly 6 digits."
+                />
+              </Field>
+              <Field label="Due Date" hint="optional">
+                <TextInput
+                  type="datetime-local" step={60}
+                  value={activityForm.due_at}
+                  onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))}
+                />
+              </Field>
+              <Field label="Status">
+                <SelectInput value={activityForm.publish_status}
+                  onChange={(e) => setActivityForm((p) => ({ ...p, publish_status: e.target.value }))}>
+                  <option value="draft">Draft</option>
+                  <option value="published">Published</option>
+                  <option value="archived">Archived</option>
+                </SelectInput>
+              </Field>
             </div>
-          )}
-          <Field label="Activity Title" hint={shouldAutoTitle ? 'auto from file' : undefined}>
-            <TextInput
-              required
-              value={activityForm.title}
-              onChange={(e) => setActivityForm((p) => ({ ...p, title: e.target.value }))}
-              placeholder="e.g. Midterm Examination"
-              readOnly={shouldAutoTitle}
-            />
-          </Field>
-          <Field label="Type">
-            <SelectInput value={activityForm.activity_type}
-              onChange={(e) => setActivityForm((p) => ({ ...p, activity_type: e.target.value }))}>
-              <option value="exam">Exam</option>
-              <option value="quiz">Quiz</option>
-              <option value="activity">Activity</option>
-            </SelectInput>
-          </Field>
-          <Field label="Exam Code" hint={isCreateMode ? 'optional' : undefined}>
-            <TextInput
-              value={activityForm.exam_code || ''}
-              onChange={(e) => setActivityForm((p) => ({
-                ...p,
-                exam_code: e.target.value.replace(/\D/g, '').slice(0, 6),
-              }))}
-              inputMode="numeric"
-              maxLength={6}
-              pattern="[0-9]{6}"
-              placeholder={isCreateMode ? 'Auto-generate if blank' : '000000'}
-              required={!isCreateMode}
-              title="Exam code must be exactly 6 digits."
-            />
-            {isCreateMode && (
-              <p className="text-[11px] text-slate-400">Leave blank to auto-generate.</p>
-            )}
-          </Field>
-          <Field label="Due Date" hint="optional">
-            <TextInput
-              type="datetime-local"
-              step={60}
-              value={activityForm.due_at}
-              onChange={(e) => setActivityForm((p) => ({ ...p, due_at: e.target.value }))}
-            />
-          </Field>
-          <Field label="Status">
-            <SelectInput value={activityForm.publish_status}
-              onChange={(e) => setActivityForm((p) => ({ ...p, publish_status: e.target.value }))}>
-              <option value="draft">Draft</option>
-              <option value="published">Published</option>
-              <option value="archived">Archived</option>
-            </SelectInput>
-          </Field>
-          <div className="mt-auto pt-2">
-            <SubmitBtn disabled={busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`} colorClass={a.btn}>
-              {busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`
-                ? <><SpinIcon /> Saving…</>
-                : (editingActivityId ? 'Save Activity' : 'Create Activity')}
-            </SubmitBtn>
-            {editingActivityId && (
-              <GhostBtn type="button" onClick={onCancelEditActivity} className="mt-2 w-full justify-center" disabled={busyAction === `edit-activity-${editingActivityId}`}>
-                <XIcon /> Cancel
+            <div className="mt-4 flex items-center gap-2">
+              <SubmitBtn
+                disabled={busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`}
+                colorClass={a.btn}
+              >
+                {busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`
+                  ? <><SpinIcon /> Saving…</>
+                  : (editingActivityId ? 'Save Activity' : 'Create Activity')}
+              </SubmitBtn>
+              <GhostBtn
+                type="button"
+                onClick={handleCancelForm}
+                disabled={busyAction === 'activity' || busyAction === `edit-activity-${editingActivityId}`}
+              >
+                Cancel
               </GhostBtn>
-            )}
-          </div>
-        </form>
+            </div>
+          </form>
+        </div>
       </div>
 
-      {/* RIGHT: list */}
-      <div className="flex flex-col gap-4 p-6 xl:h-0 xl:min-h-full xl:overflow-hidden">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">Posted Activities</h3>
-          <span className="text-xs text-slate-400">
-            {activities.length} {activities.length === 1 ? 'activity' : 'activities'}
-          </span>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto space-y-2.5 pr-1">
+      {/* Activities list */}
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="space-y-2.5">
           {activities.length ? activities.map((item) => (
             <div key={item.id}
-              className="rounded-xl border border-slate-100 bg-slate-50 p-2 transition hover:border-slate-200 hover:bg-white hover:shadow-sm"
+              className="rounded-xl border border-slate-100 bg-slate-50 p-3 transition hover:border-slate-200 hover:bg-white hover:shadow-sm dark:border-slate-700/60 dark:bg-slate-800/40 dark:hover:bg-slate-800"
             >
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-800 leading-snug">{item.title}</p>
-                <div className="flex flex-shrink-0 items-center gap-1.5">
-                  <Badge className={ACTIVITY_TYPE_STYLES[item.activity_type] || 'bg-slate-100 text-slate-500'}>
-                    {item.activity_type}
-                  </Badge>
-                  <Badge className={PUBLISH_STATUS_STYLES[item.publish_status] || 'bg-slate-100 text-slate-500'}>
-                    {item.publish_status}
-                  </Badge>
+              <div className="flex items-start justify-between gap-3">
+                {/* Left: title + meta + exam code */}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold leading-snug text-slate-800 dark:text-slate-100">{item.title}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                    <span>{item.submission_count || 0} submissions</span>
+                    {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
+                    {item.max_score && <span>{item.max_score} pts</span>}
+                  </div>
+                  {item.exam_code && (
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] font-bold tracking-widest text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                        EXAM CODE: {item.exam_code}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-                <span>{item.submission_count || 0} submissions</span>
-                {item.due_at && <span>Due {new Date(item.due_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
-                {item.max_score && <span>{item.max_score} pts</span>}
-              </div>
-              {item.exam_code && (
-                <div className="mt-1.5 flex items-center gap-2">
-                  <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] font-bold tracking-widest text-slate-500">
-                    EXAM CODE: {item.exam_code}
-                  </span>
+                {/* Right: badges then action buttons */}
+                <div className="flex flex-shrink-0 flex-col items-end gap-3">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge className={ACTIVITY_TYPE_STYLES[item.activity_type] || 'bg-slate-100 text-slate-500'}>
+                      {ACTIVITY_TYPE_LABELS[item.activity_type] ?? item.activity_type}
+                    </Badge>
+                    {item.grading_period && (
+                      <Badge className="bg-slate-100 text-slate-500 ring-1 ring-slate-200 dark:bg-slate-700 dark:text-slate-300">
+                        {item.grading_period}
+                      </Badge>
+                    )}
+                    <Badge className={PUBLISH_STATUS_STYLES[item.publish_status] || 'bg-slate-100 text-slate-500'}>
+                      {item.publish_status}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <GhostBtn
+                      type="button"
+                      onClick={() => { setShowCreateForm(false); onStartEditActivity(item) }}
+                      disabled={busyAction === `edit-activity-${item.id}`}
+                    >
+                      <PenIcon /> Edit
+                    </GhostBtn>
+                    <DangerBtn type="button" onClick={() => onDeleteActivity(item.id)} disabled={busyAction === `delete-activity-${item.id}`}>
+                      {busyAction === `delete-activity-${item.id}` ? <SpinIcon /> : <TrashIcon />}
+                      Delete
+                    </DangerBtn>
+                  </div>
                 </div>
-              )}
-              <div className="mt-2 flex justify-end gap-2">
-                <GhostBtn type="button" onClick={() => onStartEditActivity(item)} disabled={busyAction === `edit-activity-${item.id}`}>
-                  <PenIcon />
-                  Edit
-                </GhostBtn>
-                <DangerBtn type="button" onClick={() => onDeleteActivity(item.id)} disabled={busyAction === `delete-activity-${item.id}`}>
-                  {busyAction === `delete-activity-${item.id}` ? <SpinIcon /> : <TrashIcon />}
-                  Delete
-                </DangerBtn>
               </div>
             </div>
           )) : (
-            <EmptyState icon={<ClipboardIcon size="lg" />} title="No activities posted yet" description="Create your first exam, quiz, or activity." />
+            <EmptyState icon={<ClipboardIcon size="lg" />} title="No activities posted yet" description="Click '+ New Activity' above to create your first Exam, Written Work, or Performance Task." />
           )}
         </div>
       </div>
@@ -1490,7 +1680,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
     try { return sessionStorage.getItem('scanManualOpen') === '1' } catch { return false }
   })
   const scannerConnected  = Boolean(scan.scanner?.scanner?.connected)
-  const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'review'
+  const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'stopping' | 'review'
   const stagedSheets      = scan.stagedSheets ?? []
   const typedStudentCode  = String(scan.gradeForm?.student_code || '').trim()
 
@@ -1525,7 +1715,8 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   const answerInputRefs = useRef([])
 
   // ── Scanning mode ────────────────────────────────────────────────────────────
-  if (sessionStatus === 'scanning') {
+  if (sessionStatus === 'scanning' || sessionStatus === 'stopping') {
+    const isStopping = sessionStatus === 'stopping'
     const okCount      = stagedSheets.filter((s) => s.status === 'ok').length
     const flaggedCount = stagedSheets.filter((s) => s.status === 'flagged').length
     const lastSheet    = stagedSheets[stagedSheets.length - 1] ?? null
@@ -1541,8 +1732,12 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
               <ScanIcon />
             </span>
             <div>
-              <h3 className="text-sm font-bold text-slate-800">Scanning in progress…</h3>
-              <p className="text-xs text-slate-500">{stagedSheets.length} sheet{stagedSheets.length !== 1 ? 's' : ''} processed</p>
+              <h3 className="text-sm font-bold text-slate-800">
+                {isStopping ? 'Stopping scanning...' : 'Scanning in progress...'}
+              </h3>
+              <p className="text-xs text-slate-500">
+                {isStopping ? 'Finishing the current hardware step' : `${stagedSheets.length} sheet${stagedSheets.length !== 1 ? 's' : ''} processed`}
+              </p>
             </div>
           </div>
 
@@ -1577,10 +1772,10 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
           <button
             type="button"
             onClick={scan.onStopBatchScan}
-            disabled={scan.busy}
+            disabled={scan.busy || isStopping}
             className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-rose-300 bg-white px-4 py-3 text-sm font-bold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"
           >
-            Stop Scanning
+            {isStopping ? 'Stopping scanning...' : 'Stop Scanning'}
           </button>
         </section>
       </div>
@@ -1779,229 +1974,504 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   )
 }
 
-function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], selectedSubject = null, onOpenPendingActivity = () => {} }) {
-  const [expandedStudentId, setExpandedStudentId] = useState('')
-  const hasExpanded = Boolean(expandedStudentId)
+function GradebookTab({
+  gradebook,
+  atRiskStudents,
+  publishedActivities = [],
+  gradeWeights = {},
+  selectedQuarter = 'all',
+  selectedSubject = null,
+  onOpenPendingActivity = () => {},
+  onSaveGradeWeights = () => {},
+  onSaveScore = () => {},
+  onQuarterChange = () => {},
+}) {
+  const [searchQuery, setSearchQuery]         = useState('')
+  const [sortKey, setSortKey]                 = useState('name')
+  const [showWeightsPanel, setShowWeightsPanel] = useState(false)
+  const [localWeights, setLocalWeights]       = useState({ written_work: 0, performance_task: 0, quarterly_assessment: 0 })
+  const [savingWeights, setSavingWeights]     = useState(false)
+  const [editingCell, setEditingCell]         = useState(null)
+  const [cellDraft, setCellDraft]             = useState('')
+  const [savingCell, setSavingCell]           = useState(null)
+  const { onFocus: oskFocus }                 = useOSK()
+
+  // sync localWeights when parent gradeWeights changes
+  const prevWeightsRef = useRef(null)
+  if (prevWeightsRef.current !== gradeWeights) {
+    prevWeightsRef.current = gradeWeights
+    // only sync if panel isn't open (avoid clobbering user edits)
+    if (!showWeightsPanel) {
+      // eslint-disable-next-line no-unused-expressions
+      localWeights.written_work === 0 && localWeights.performance_task === 0 && localWeights.quarterly_assessment === 0
+        ? setLocalWeights({ ...gradeWeights })
+        : null
+    }
+  }
+
+  // on open, always sync
+  function openWeightsPanel() {
+    setLocalWeights({ ...gradeWeights })
+    setShowWeightsPanel(true)
+  }
+
+  const wwActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'quiz'), [publishedActivities])
+  const ptActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'activity'), [publishedActivities])
+  const qaActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'exam'), [publishedActivities])
+
+  const filteredRows = useMemo(() => {
+    const q = searchQuery.toLowerCase()
+    let rows = gradebook.filter((r) => {
+      if (!q) return true
+      const name = formatStudentFullName(r.given_name, r.middle_name, r.surname).toLowerCase()
+      return name.includes(q) || String(r.student_code || '').toLowerCase().includes(q)
+    })
+    if (sortKey === 'name') rows = [...rows].sort((a, b) => a.surname.localeCompare(b.surname))
+    else if (sortKey === 'avg_asc') rows = [...rows].sort((a, b) => (a.final_grade ?? -1) - (b.final_grade ?? -1))
+    else if (sortKey === 'avg_desc') rows = [...rows].sort((a, b) => (b.final_grade ?? -1) - (a.final_grade ?? -1))
+    return rows
+  }, [gradebook, searchQuery, sortKey])
+
+  // Fallback grade when weights are 0%: simple average of non-null component percentages
+  function provisionalGrade(row) {
+    const vals = [row.ww_component_pct, row.pt_component_pct, row.qa_component_pct]
+      .filter((v) => v !== null && v !== undefined)
+    if (vals.length === 0) return null
+    return Math.round((vals.reduce((s, v) => s + Number(v), 0) / vals.length) * 100) / 100
+  }
+
+  function getStudentScore(row, activity) {
+    const details = Array.isArray(row.published_details) ? row.published_details : []
+    return details.find((d) => String(d.activity_id) === String(activity.activity_id))
+  }
+
+  async function commitCell(activityId, studentId) {
+    const val = cellDraft === '' ? null : parseFloat(cellDraft)
+    setSavingCell({ activityId, studentId })
+    setEditingCell(null)
+    await onSaveScore(activityId, studentId, Number.isFinite(val) ? val : null)
+    setSavingCell(null)
+  }
+
+  async function handleSaveWeights() {
+    setSavingWeights(true)
+    await onSaveGradeWeights({ ...localWeights })
+    setSavingWeights(false)
+    setShowWeightsPanel(false)
+  }
+
+  const weightTotal = (Number(localWeights.written_work) || 0)
+    + (Number(localWeights.performance_task) || 0)
+    + (Number(localWeights.quarterly_assessment) || 0)
+
+  // column count for colSpan calculations
+  // Student(1) + WW cols + WW score + PT cols + PT score + QA cols + QA score + Final(1)
+  const totalCols = 1 + wwActivities.length + (wwActivities.length > 0 ? 1 : 0)
+    + ptActivities.length + (ptActivities.length > 0 ? 1 : 0)
+    + qaActivities.length + (qaActivities.length > 0 ? 1 : 0)
+    + 1
 
   return (
-    <div className="min-h-[520px] p-6">
-      {/* Summary pills */}
-      {gradebook.length > 0 && (
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-900/25 dark:text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-              {gradebook.length} students enrolled
+    <div className="min-h-[520px] p-4">
+      {/* ── Top controls ─────────────────────────────────────── */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {/* Search */}
+        <div className="relative flex-1 min-w-[160px]">
+          <svg className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M9 3a6 6 0 100 12A6 6 0 009 3zM2 9a7 7 0 1112.452 4.391l3.328 3.329a1 1 0 11-1.414 1.414l-3.33-3.328A7 7 0 012 9z" clipRule="evenodd" />
+          </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onFocus={oskFocus}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search students…"
+            className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 shadow-sm outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          />
+        </div>
+
+        {/* Quarter filter */}
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-1 py-1 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+          {['all', ...GRADING_PERIODS].map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => onQuarterChange(q)}
+              className={`rounded-md px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                selectedQuarter === q
+                  ? 'bg-emerald-500 text-white shadow-sm'
+                  : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+              }`}
+            >
+              {q === 'all' ? 'All' : q}
+            </button>
+          ))}
+        </div>
+
+        {/* Sort */}
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value)}
+          className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-600 shadow-sm outline-none focus:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+        >
+          <option value="name">Sort: Name A–Z</option>
+          <option value="avg_desc">Sort: Grade ↓</option>
+          <option value="avg_asc">Sort: Grade ↑</option>
+        </select>
+
+        {/* Grade weights toggle */}
+        <button
+          type="button"
+          onClick={() => showWeightsPanel ? setShowWeightsPanel(false) : openWeightsPanel()}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+        >
+          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
+          Weights
+        </button>
+
+        {/* Summary pills */}
+        {gradebook.length > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-900/25 dark:text-emerald-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              {gradebook.length} students
             </span>
             {atRiskStudents.length > 0 && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-700/70 dark:bg-amber-900/25 dark:text-amber-300">
+              <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 dark:border-rose-700/70 dark:bg-rose-900/25 dark:text-rose-300">
                 <RiskIcon />
                 {atRiskStudents.length} at-risk
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => exportGradebookWorkbook({ gradebook, publishedActivities, gradeWeights, subject: selectedSubject })}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-700/70 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-900/25"
+              title="Export gradebook to Excel"
+            >
+              <DocIcon />
+              Export
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => exportGradebookWorkbook({ gradebook, publishedActivities, subject: selectedSubject })}
-            className="inline-flex w-fit items-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 dark:border-emerald-700/70 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-900/25"
-            title="Export gradebook to Excel"
-          >
-            <DocIcon />
-            Export Excel
-          </button>
+        )}
+      </div>
+
+      {/* ── Grade Weights Panel ───────────────────────────────── */}
+      {showWeightsPanel && (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-widest text-slate-400">Grade Weights (must total 100%)</p>
+          <div className="flex flex-wrap items-end gap-4">
+            {[
+              { key: 'written_work', label: 'Written Work' },
+              { key: 'performance_task', label: 'Performance Task' },
+              { key: 'quarterly_assessment', label: 'Quarterly Assessment' },
+            ].map(({ key, label }) => (
+              <label key={key} className="flex flex-col gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                {label}
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={localWeights[key] ?? 0}
+                    onChange={(e) => setLocalWeights((p) => ({ ...p, [key]: parseFloat(e.target.value) || 0 }))}
+                    className="w-16 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-center text-sm font-bold text-slate-700 outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <span className="text-slate-400">%</span>
+                </div>
+              </label>
+            ))}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-500">Total</span>
+              <span className={`rounded-lg px-3 py-1 text-sm font-bold ${Math.abs(weightTotal - 100) < 0.01 ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'}`}>
+                {weightTotal}%
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={savingWeights}
+              onClick={handleSaveWeights}
+              className="self-end inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {savingWeights ? <SpinIcon /> : null}
+              Save Weights
+            </button>
+            {Math.abs(weightTotal - 100) >= 0.01 && (
+              <p className="self-end text-[11px] text-rose-500">Weights must add up to 100% for correct final grade computation.</p>
+            )}
+          </div>
         </div>
       )}
 
-      {gradebook.length ? (
-        <div className="max-h-[564px] overflow-y-auto rounded-2xl border border-slate-200 bg-white/80 dark:border-slate-700/80 dark:bg-slate-900/40">
+      {/* ── Table ──────────────────────────────────────────────── */}
+      {gradebook.length > 0 ? (
+        <div className="max-h-[520px] overflow-x-auto overflow-y-auto rounded-2xl border border-slate-200 bg-white/80 dark:border-slate-700/80 dark:bg-slate-900/40">
           <table className="min-w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-white/95 backdrop-blur dark:bg-slate-950/90">
+            {/* ── Group header row ── */}
+            <thead className="sticky top-0 z-20 bg-white/95 backdrop-blur dark:bg-slate-950/90">
+              <tr className="border-b border-slate-100 dark:border-slate-700/60">
+                {/* Student sticky col */}
+                <th
+                  rowSpan={2}
+                  className="sticky left-0 z-30 bg-white/95 py-2 pr-4 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400 backdrop-blur dark:bg-slate-950/90 dark:text-slate-300"
+                  style={{ minWidth: 180 }}
+                >
+                  Student
+                </th>
+                {/* Written Work group */}
+                {wwActivities.length > 0 && (
+                  <th
+                    colSpan={wwActivities.length + 1}
+                    className="border-l border-violet-200 bg-violet-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-violet-600 dark:border-violet-700/50 dark:bg-violet-900/15 dark:text-violet-300"
+                  >
+                    Written Work ({gradeWeights.written_work ?? 0}%)
+                  </th>
+                )}
+                {/* Performance Task group */}
+                {ptActivities.length > 0 && (
+                  <th
+                    colSpan={ptActivities.length + 1}
+                    className="border-l border-teal-200 bg-teal-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-teal-600 dark:border-teal-700/50 dark:bg-teal-900/15 dark:text-teal-300"
+                  >
+                    Performance Task ({gradeWeights.performance_task ?? 0}%)
+                  </th>
+                )}
+                {/* Quarterly Assessment group */}
+                {qaActivities.length > 0 && (
+                  <th
+                    colSpan={qaActivities.length + 1}
+                    className="border-l border-blue-200 bg-blue-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-blue-600 dark:border-blue-700/50 dark:bg-blue-900/15 dark:text-blue-300"
+                  >
+                    Quarterly Assessment ({gradeWeights.quarterly_assessment ?? 0}%)
+                  </th>
+                )}
+                {/* Final Grade */}
+                <th
+                  rowSpan={2}
+                  className="border-l border-slate-200 px-3 pb-3 text-center text-[11px] font-bold uppercase tracking-widest text-slate-500 dark:border-slate-700 dark:text-slate-300"
+                  style={{ minWidth: 80 }}
+                >
+                  Final Grade
+                </th>
+              </tr>
+              {/* ── Individual activity headers ── */}
               <tr className="border-b border-slate-100 dark:border-slate-700/80">
-                {['Student', 'Published Activities'].map((h) => (
-                  <th key={h} className="pb-3 pr-4 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-300">{h}</th>
+                {wwActivities.map((act, i) => (
+                  <th key={`ww-h-${act.activity_id}`} className="border-l border-violet-100 bg-violet-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-violet-700/30 dark:bg-violet-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
+                    WW{i + 1}<br /><span className="font-normal text-slate-400">/{act.max_score}</span>
+                  </th>
                 ))}
-                {['Completed', 'Average'].map((h) => (
-                  <th key={h} className="pb-3 pr-4 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-300">{h}</th>
+                {wwActivities.length > 0 && (
+                  <th className="border-l border-violet-200 bg-violet-50/60 px-2 pb-2 text-center text-[10px] font-bold text-violet-600 dark:border-violet-700/50 dark:bg-violet-900/15 dark:text-violet-300" style={{ minWidth: 56 }}>Score</th>
+                )}
+                {ptActivities.map((act, i) => (
+                  <th key={`pt-h-${act.activity_id}`} className="border-l border-teal-100 bg-teal-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-teal-700/30 dark:bg-teal-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
+                    PT{i + 1}<br /><span className="font-normal text-slate-400">/{act.max_score}</span>
+                  </th>
                 ))}
+                {ptActivities.length > 0 && (
+                  <th className="border-l border-teal-200 bg-teal-50/60 px-2 pb-2 text-center text-[10px] font-bold text-teal-600 dark:border-teal-700/50 dark:bg-teal-900/15 dark:text-teal-300" style={{ minWidth: 56 }}>Score</th>
+                )}
+                {qaActivities.map((act, i) => (
+                  <th key={`qa-h-${act.activity_id}`} className="border-l border-blue-100 bg-blue-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-blue-700/30 dark:bg-blue-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
+                    QA{i + 1}<br /><span className="font-normal text-slate-400">/{act.total_items ?? act.max_score}</span>
+                  </th>
+                ))}
+                {qaActivities.length > 0 && (
+                  <th className="border-l border-blue-200 bg-blue-50/60 px-2 pb-2 text-center text-[10px] font-bold text-blue-600 dark:border-blue-700/50 dark:bg-blue-900/15 dark:text-blue-300" style={{ minWidth: 56 }}>Score</th>
+                )}
               </tr>
             </thead>
             <tbody>
-              {gradebook.map((row) => {
-                const displayName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
-                const details = Array.isArray(row.published_details) ? row.published_details : []
-                const checkedItems = details.filter((activity) => activity.status === 'checked')
-                const pendingCount = details.length - checkedItems.length
-                const completedCount = Number(row.completed_activities || 0)
-                const publishedCount = Number(row.published_activities || 0)
-                const avg = Number(row.average_percent || 0)
-                const hasAvg = row.average_percent !== null && row.average_percent !== undefined && !Number.isNaN(avg)
-                const isAtRisk = publishedCount > 0 && (completedCount < publishedCount || (hasAvg && avg < 75))
-                const segmentCount = publishedCount > 0 ? Math.min(publishedCount, 12) : 0
-                const filledSegments = publishedCount > 0
-                  ? Math.round((Math.min(completedCount, publishedCount) / publishedCount) * segmentCount)
-                  : 0
-                const isExpanded = String(expandedStudentId) === String(row.student_id)
-                const isDimmed = hasExpanded && !isExpanded
-
-                return [
+              {filteredRows.length === 0 ? (
+                <tr>
+                  <td colSpan={totalCols} className="py-8 text-center text-sm text-slate-400">No students match your search.</td>
+                </tr>
+              ) : filteredRows.map((row) => {
+                const isAtRisk = (row.final_grade !== null && row.final_grade !== undefined && row.final_grade < 75)
+                return (
                   <tr
                     key={`row-${row.student_id}`}
-                    tabIndex={0}
-                    aria-expanded={isExpanded}
-                    onClick={() => setExpandedStudentId((prev) => (String(prev) === String(row.student_id) ? '' : String(row.student_id)))}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setExpandedStudentId((prev) => (String(prev) === String(row.student_id) ? '' : String(row.student_id)))
-                      }
-                    }}
-                    className={`cursor-pointer border-b border-slate-100 transition-all duration-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-inset dark:border-slate-800 dark:hover:bg-slate-800/55 ${isAtRisk ? 'bg-rose-50/30 dark:bg-rose-900/20' : ''} ${isExpanded ? 'bg-brand-50/40 shadow-[inset_0_-1px_0_rgba(148,163,184,0.15)] dark:bg-brand-900/20 dark:shadow-[inset_0_-1px_0_rgba(71,85,105,0.35)]' : ''} ${isDimmed ? 'opacity-40 dark:opacity-50' : ''}`}
+                    className={`border-b border-slate-100 dark:border-slate-800 ${isAtRisk ? 'bg-rose-50/30 dark:bg-rose-900/15' : 'hover:bg-slate-50/60 dark:hover:bg-slate-800/30'}`}
                   >
-                    <td className={`py-3 pr-3 ${isAtRisk ? 'border-l-2 border-rose-200 pl-2 dark:border-rose-700/70' : ''}`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                            {initials(`${row.given_name || ''} ${row.surname || ''}`.trim() || row.surname)}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 dark:text-slate-100">
-                              {displayName}
-                            </p>
-                            <p className="font-mono text-[11px] text-slate-400 dark:text-slate-400">{row.student_code}</p>
-                          </div>
+                    {/* Student cell — sticky */}
+                    <td className={`sticky left-0 z-10 bg-white py-2.5 pr-4 dark:bg-slate-900 ${isAtRisk ? 'border-l-2 border-rose-300 pl-2 dark:border-rose-700' : 'pl-0'}`}>
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                          {initials(`${row.given_name || ''} ${row.surname || ''}`.trim())}
                         </div>
-                        <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 dark:text-slate-400">
-                          <span>{isExpanded ? 'Hide' : 'Details'}</span>
-                          <svg
-                            className={`h-3.5 w-3.5 transition-transform duration-700 ${isExpanded ? 'rotate-180 text-brand-500 dark:text-brand-300' : ''}`}
-                            viewBox="0 0 20 20"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                          >
-                            <path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                            {formatStudentFullName(row.given_name, row.middle_name, row.surname)}
+                          </p>
+                          <p className="font-mono text-[10px] text-slate-400">{row.student_code}</p>
                         </div>
                       </div>
                     </td>
-                    <td className="py-3 pr-4">
-                      <div className="flex w-full items-center gap-2">
-                        {details.length > 0 ? (
-                          <>
-                            <div className="flex flex-wrap items-center gap-1">
-                              {checkedItems.map((activity) => {
-                                const label = `${activity.title}: ${activity.score}/${activity.total_items || activity.max_score || '-'}`
-                                return (
-                                  <span
-                                    key={`${row.student_id}-${activity.activity_id}`}
-                                    title={label}
-                                    className="h-2.5 w-2.5 rounded-sm bg-emerald-500 ring-1 ring-emerald-300 dark:bg-emerald-400 dark:ring-emerald-700/70"
-                                  />
-                                )
-                              })}
-                              {checkedItems.length === 0 && (
-                                <span className="text-xs text-slate-400 dark:text-slate-500">-</span>
-                              )}
-                            </div>
-                            {pendingCount > 0 && (
-                              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                                +{pendingCount} pending
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="text-xs text-slate-400 dark:text-slate-500">No published activities</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 pr-4 text-center text-slate-700 dark:text-slate-200">
-                      {publishedCount > 0 ? (
-                        <div className="inline-flex flex-col items-center gap-1">
-                          <div className="flex items-center gap-0.5" title={`${completedCount}/${publishedCount} completed`}>
-                            {Array.from({ length: segmentCount }).map((_, idx) => (
-                              <span
-                                key={`${row.student_id}-segment-${idx}`}
-                                className={`h-2 w-2 rounded-[2px] ${idx < filledSegments ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-200 dark:bg-slate-700'}`}
-                              />
-                            ))}
-                          </div>
-                          <span className="text-xs">{completedCount}/{publishedCount}</span>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-slate-400 dark:text-slate-500">-</span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-0 text-center">
-                      <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${averageBadgeBg(row.average_percent)}`}>
-                        {formatPercent(row.average_percent)}
-                      </span>
-                    </td>
-                  </tr>,
-                  <tr key={`details-${row.student_id}`} className={`${isDimmed ? 'opacity-35' : ''}`}>
-                    <td colSpan={4} className="p-0">
-                      <div className={`overflow-hidden transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isExpanded ? 'max-h-[820px] opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-1'}`}>
-                        <div className="mx-2 mb-2 rounded-xl border border-slate-200/90 bg-slate-50/70 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-slate-700/80 dark:bg-slate-900/60 dark:shadow-none">
-                          <div className="mx-auto w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-                          <p className="mb-2 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-400">Published Activity Details</p>
-                          {details.length > 0 ? (
-                            <div className="space-y-1.5">
-                              {details.map((activity) => {
-                                const checked = activity.status === 'checked'
-                                const pending = activity.status === 'pending'
-                                const statusLabel = checked ? 'Checked' : pending ? 'Pending' : 'Posted'
-                                const statusClass = checked
-                                  ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-700/70'
-                                  : pending
-                                    ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-700/70'
-                                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                                const scoreLabel = checked
-                                  ? `${activity.score}/${activity.total_items || activity.max_score || '-'}`
-                                  : '-'
-                                const computedPercent = checked
-                                  ? (activity.percent ?? (
-                                      Number(activity.total_items || activity.max_score || 0) > 0
-                                        ? ((Number(activity.score || 0) / Number(activity.total_items || activity.max_score || 1)) * 100)
-                                        : null
-                                    ))
-                                  : null
-                                const percentLabel = computedPercent !== null && computedPercent !== undefined && !Number.isNaN(Number(computedPercent))
-                                  ? `${Math.round(Number(computedPercent) * 100) / 100}%`
-                                  : '-'
-
-                                return (
-                                  <button
-                                    key={`detail-item-${row.student_id}-${activity.activity_id}`}
-                                    type="button"
-                                    disabled={!pending}
-                                    onClick={() => {
-                                      if (!pending) return
-                                      onOpenPendingActivity(row, activity)
-                                    }}
-                                    className={`mx-auto flex w-full max-w-xl items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-left dark:border-slate-700 dark:bg-slate-800/70 ${pending ? 'cursor-pointer hover:border-brand-200 hover:bg-white dark:hover:border-brand-700 dark:hover:bg-slate-800' : 'cursor-default'}`}
-                                  >
-                                    <div className="min-w-0">
-                                      <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-100">{activity.title}</p>
-                                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-400">{activity.activity_type}</p>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusClass}`}>{statusLabel}</span>
-                                      <span className="font-mono text-xs text-slate-600 dark:text-slate-300">{scoreLabel}</span>
-                                      <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{percentLabel}</span>
-                                      {pending && <span className="text-[11px] font-semibold text-brand-600 dark:text-brand-300">Check now</span>}
-                                    </div>
-                                  </button>
-                                )
-                              })}
-                            </div>
+                    {/* Written Work score cells */}
+                    {wwActivities.map((act) => {
+                      const detail = getStudentScore(row, act)
+                      const score = detail?.score ?? null
+                      const isEditing = editingCell?.activityId === act.activity_id && editingCell?.studentId === row.student_id
+                      const isSaving = savingCell?.activityId === act.activity_id && savingCell?.studentId === row.student_id
+                      return (
+                        <td
+                          key={`ww-${row.student_id}-${act.activity_id}`}
+                          className="border-l border-violet-100/70 bg-violet-50/20 px-1 py-1 text-center dark:border-violet-700/20 dark:bg-violet-900/5"
+                        >
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              // eslint-disable-next-line jsx-a11y/no-autofocus
+                              autoFocus
+                              value={cellDraft}
+                              onFocus={oskFocus}
+                              onChange={(e) => {
+                                const val = e.target.value
+                                if (val === '' || val === '.') { setCellDraft(val); return }
+                                const num = parseFloat(val)
+                                setCellDraft(!isNaN(num) && num > act.max_score ? String(act.max_score) : val)
+                              }}
+                              onBlur={() => commitCell(act.activity_id, row.student_id)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); commitCell(act.activity_id, row.student_id) }
+                                if (e.key === 'Escape') setEditingCell(null)
+                              }}
+                              className="w-14 rounded border border-brand-400 bg-white px-1 py-0.5 text-center text-xs font-bold text-slate-700 outline-none ring-1 ring-brand-300 dark:bg-slate-800 dark:text-slate-100"
+                            />
                           ) : (
-                            <p className="text-center text-xs text-slate-400 dark:text-slate-500">No published activities for this subject yet.</p>
+                            <button
+                              type="button"
+                              title={`${act.title} — click to edit`}
+                              onClick={() => { setEditingCell({ activityId: act.activity_id, studentId: row.student_id }); setCellDraft(score !== null ? String(score) : '') }}
+                              className={`w-full rounded px-2 py-0.5 text-xs font-semibold transition ${isSaving ? 'opacity-50' : ''} ${score !== null ? 'text-slate-700 dark:text-slate-200' : 'text-slate-300 hover:text-slate-500 dark:text-slate-600'} hover:bg-violet-100 dark:hover:bg-violet-900/20`}
+                            >
+                              {isSaving ? '…' : score !== null ? score : '—'}
+                            </button>
                           )}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>,
-                ]
+                        </td>
+                      )
+                    })}
+                    {/* WW component % */}
+                    {wwActivities.length > 0 && (
+                      <td className="border-l border-violet-200 bg-violet-50/40 px-2 py-1 text-center dark:border-violet-700/30 dark:bg-violet-900/10">
+                        <span className={`text-xs font-bold ${row.ww_component_pct !== null ? 'text-violet-700 dark:text-violet-300' : 'text-slate-300 dark:text-slate-600'}`}>
+                          {row.ww_component_pct !== null ? `${row.ww_component_pct}%` : '—'}
+                        </span>
+                      </td>
+                    )}
+                    {/* Performance Task score cells */}
+                    {ptActivities.map((act) => {
+                      const detail = getStudentScore(row, act)
+                      const score = detail?.score ?? null
+                      const isEditing = editingCell?.activityId === act.activity_id && editingCell?.studentId === row.student_id
+                      const isSaving = savingCell?.activityId === act.activity_id && savingCell?.studentId === row.student_id
+                      return (
+                        <td
+                          key={`pt-${row.student_id}-${act.activity_id}`}
+                          className="border-l border-teal-100/70 bg-teal-50/20 px-1 py-1 text-center dark:border-teal-700/20 dark:bg-teal-900/5"
+                        >
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              // eslint-disable-next-line jsx-a11y/no-autofocus
+                              autoFocus
+                              value={cellDraft}
+                              onFocus={oskFocus}
+                              onChange={(e) => {
+                                const val = e.target.value
+                                if (val === '' || val === '.') { setCellDraft(val); return }
+                                const num = parseFloat(val)
+                                setCellDraft(!isNaN(num) && num > act.max_score ? String(act.max_score) : val)
+                              }}
+                              onBlur={() => commitCell(act.activity_id, row.student_id)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); commitCell(act.activity_id, row.student_id) }
+                                if (e.key === 'Escape') setEditingCell(null)
+                              }}
+                              className="w-14 rounded border border-brand-400 bg-white px-1 py-0.5 text-center text-xs font-bold text-slate-700 outline-none ring-1 ring-brand-300 dark:bg-slate-800 dark:text-slate-100"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              title={`${act.title} — click to edit`}
+                              onClick={() => { setEditingCell({ activityId: act.activity_id, studentId: row.student_id }); setCellDraft(score !== null ? String(score) : '') }}
+                              className={`w-full rounded px-2 py-0.5 text-xs font-semibold transition ${isSaving ? 'opacity-50' : ''} ${score !== null ? 'text-slate-700 dark:text-slate-200' : 'text-slate-300 hover:text-slate-500 dark:text-slate-600'} hover:bg-teal-100 dark:hover:bg-teal-900/20`}
+                            >
+                              {isSaving ? '…' : score !== null ? score : '—'}
+                            </button>
+                          )}
+                        </td>
+                      )
+                    })}
+                    {/* PT component % */}
+                    {ptActivities.length > 0 && (
+                      <td className="border-l border-teal-200 bg-teal-50/40 px-2 py-1 text-center dark:border-teal-700/30 dark:bg-teal-900/10">
+                        <span className={`text-xs font-bold ${row.pt_component_pct !== null ? 'text-teal-700 dark:text-teal-300' : 'text-slate-300 dark:text-slate-600'}`}>
+                          {row.pt_component_pct !== null ? `${row.pt_component_pct}%` : '—'}
+                        </span>
+                      </td>
+                    )}
+                    {/* Quarterly Assessment score cells (read-only) */}
+                    {qaActivities.map((act) => {
+                      const detail = getStudentScore(row, act)
+                      const score = detail?.score ?? null
+                      const total = act.total_items ?? act.max_score
+                      const isPending = detail?.status === 'pending'
+                      return (
+                        <td
+                          key={`qa-${row.student_id}-${act.activity_id}`}
+                          className="border-l border-blue-100/70 bg-blue-50/20 px-2 py-1 text-center dark:border-blue-700/20 dark:bg-blue-900/5"
+                        >
+                          {score !== null ? (
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{score}<span className="font-normal text-slate-400">/{total}</span></span>
+                          ) : isPending ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenPendingActivity(row, detail)}
+                              className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                            >
+                              Pending
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                          )}
+                        </td>
+                      )
+                    })}
+                    {/* QA component % */}
+                    {qaActivities.length > 0 && (
+                      <td className="border-l border-blue-200 bg-blue-50/40 px-2 py-1 text-center dark:border-blue-700/30 dark:bg-blue-900/10">
+                        <span className={`text-xs font-bold ${row.qa_component_pct !== null ? 'text-blue-700 dark:text-blue-300' : 'text-slate-300 dark:text-slate-600'}`}>
+                          {row.qa_component_pct !== null ? `${row.qa_component_pct}%` : '—'}
+                        </span>
+                      </td>
+                    )}
+                    {/* Final Grade */}
+                    {(() => {
+                      const details = Array.isArray(row.published_details) ? row.published_details : []
+                      const allGraded = details.length > 0 && details.every((d) => d.status === 'checked')
+                      const displayGrade = selectedQuarter !== 'all'
+                        ? (row.final_grade ?? provisionalGrade(row))
+                        : (allGraded ? (row.final_grade ?? provisionalGrade(row)) : null)
+                      return (
+                        <td className="border-l border-slate-200 px-2 py-1 text-center dark:border-slate-700">
+                          {displayGrade !== null ? (
+                            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${averageBadgeBg(displayGrade)}`}>
+                              {formatPercent(displayGrade)}
+                            </span>
+                          ) : (
+                            <span className="inline-block rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+                              N/A
+                            </span>
+                          )}
+                        </td>
+                      )
+                    })()}
+                  </tr>
+                )
               })}
             </tbody>
           </table>
@@ -2010,12 +2480,14 @@ function GradebookTab({ gradebook, atRiskStudents, publishedActivities = [], sel
         <EmptyState
           icon={<GradebookIcon size="lg" />}
           title="No gradebook data yet"
-          description="Enroll students and post exam activities to see grades here."
+          description="Enroll students and publish Exam, Written Work, or Performance Task activities to see grades here."
         />
       )}
-      {gradebook.length > 0 && publishedActivities.length > 0 && (
+      {publishedActivities.length > 0 && (
         <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
-          Showing {publishedActivities.length} published activit{publishedActivities.length === 1 ? 'y' : 'ies'} per student.
+          {selectedQuarter === 'all'
+            ? 'Final Grade shows only when all activities across all quarters are graded. Select Q1–Q4 to view per-quarter grades.'
+            : 'Click a Written Work or Performance Task cell to enter a score. Exam scores come from the scanner.'}
         </p>
       )}
     </div>
@@ -2187,6 +2659,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [announcements, setAnnouncements]         = useState([])
   const [gradebook, setGradebook]                 = useState([])
   const [gradebookPublishedActivities, setGradebookPublishedActivities] = useState([])
+  const [gradeWeights, setGradeWeights]           = useState({ written_work: 0, performance_task: 0, quarterly_assessment: 0 })
+  const [selectedQuarter, setSelectedQuarter]     = useState('all')
   const [loading, setLoading]                     = useState(false)
   const [error, setError]                         = useState('')
   const [busyAction, setBusyAction]               = useState('')
@@ -2269,8 +2743,8 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     return linkedTemplates.length ? linkedTemplates : allTemplates
   }, [activities, scan.exams])
   const atRiskStudents      = useMemo(() => gradebook.filter((r) => {
-    const p = Number(r.published_activities || 0)
-    return p > 0 && (Number(r.completed_activities || 0) < p || Number(r.average_percent || 0) < 75)
+    const fg = r.final_grade ?? r.average_percent
+    return fg !== null && fg !== undefined && Number(fg) < 75
   }), [gradebook])
 
   // Build tab list dynamically
@@ -2294,17 +2768,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setSubjects(res.data || [])
   }
 
-  async function loadSubjectDetails(id) {
-    if (!id) return
-    const [sR, aR, anR, gR] = await Promise.all([
-      apiGet(withEducator(`/lms/subjects/${id}/students`)),
-      apiGet(withEducator(`/lms/subjects/${id}/activities`)),
-      apiGet(withEducator(`/lms/subjects/${id}/announcements`)),
-      apiGet(withEducator(`/lms/subjects/${id}/gradebook`)),
-    ])
-    setStudents(sR.data || [])
-    setActivities(aR.data || [])
-    setAnnouncements(anR.data || [])
+  function applyGradebookResponse(gR) {
     const gradebookData = gR.data || []
     if (Array.isArray(gradebookData)) {
       setGradebook(gradebookData)
@@ -2312,7 +2776,25 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     } else {
       setGradebook(gradebookData.rows || [])
       setGradebookPublishedActivities(gradebookData.published_activities || [])
+      if (gradebookData.grade_weights) setGradeWeights(gradebookData.grade_weights)
     }
+  }
+
+  async function loadSubjectDetails(id, quarter) {
+    if (!id) return
+    const quarterParam = quarter && quarter !== 'all' ? `?quarter=${quarter}` : ''
+    const [sR, aR, anR, gR, gwR] = await Promise.all([
+      apiGet(withEducator(`/lms/subjects/${id}/students`)),
+      apiGet(withEducator(`/lms/subjects/${id}/activities`)),
+      apiGet(withEducator(`/lms/subjects/${id}/announcements`)),
+      apiGet(withEducator(`/lms/subjects/${id}/gradebook${quarterParam}`)),
+      apiGet(withEducator(`/lms/subjects/${id}/grade-weights`)),
+    ])
+    setStudents(sR.data || [])
+    setActivities(aR.data || [])
+    setAnnouncements(anR.data || [])
+    applyGradebookResponse(gR)
+    if (gwR.data) setGradeWeights(gwR.data)
   }
 
   async function refreshSubjectAndHomepage(id) {
@@ -2538,15 +3020,23 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     } catch (err) { setError(err.message) } finally { setBusyAction('') }
   }
 
-  async function onRemoveStudent(id) {
-    setBusyAction(`remove-student-${id}`)
-    try {
-      await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/students/${id}`))
-      if (String(editingStudentId) === String(id)) {
-        onCancelEditStudent()
-      }
-      await refreshSubjectAndHomepage(selectedSubjectId)
-    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  function onRemoveStudent(id) {
+    const student = students.find((s) => String(s.id) === String(id))
+    const name = student ? formatStudentFullName(student.given_name, student.middle_name, student.surname) : 'this student'
+    setConfirmDialog({
+      title: `Remove "${name}"?`,
+      message: 'This will unenroll the student from this subject. Their account is not deleted.',
+      confirmLabel: 'Remove Student',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBusyAction(`remove-student-${id}`)
+        try {
+          await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/students/${id}`))
+          if (String(editingStudentId) === String(id)) onCancelEditStudent()
+          await refreshSubjectAndHomepage(selectedSubjectId)
+        } catch (err) { setError(err.message) } finally { setBusyAction('') }
+      },
+    })
   }
 
   async function onCreateActivity(e) {
@@ -2617,6 +3107,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
       exam_code: activity.exam_code || '',
       max_score: activity.max_score || 100,
       due_at: activity.due_at ? String(activity.due_at).slice(0, 16) : '',
+      grading_period: activity.grading_period || '',
       publish_status: activity.publish_status || 'draft',
     })
     resetActivityTemplateDraft()
@@ -2751,6 +3242,36 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     })
     setScanManualFocusToken(`${Date.now()}-${row?.student_id || ''}-${activity?.activity_id || ''}`)
     setActiveTab('scan')
+  }
+
+  async function handleSaveGradeWeights(weights) {
+    if (!selectedSubjectId) return
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/grade-weights`), weights)
+      setGradeWeights(weights)
+    } catch (err) { showToast(err.message) }
+  }
+
+  async function handleSaveScore(activityId, studentId, score) {
+    if (!selectedSubjectId) return
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${activityId}/scores`), {
+        scores: [{ student_id: studentId, score }],
+      })
+      const quarterParam = selectedQuarter !== 'all' ? `?quarter=${selectedQuarter}` : ''
+      const gR = await apiGet(withEducator(`/lms/subjects/${selectedSubjectId}/gradebook${quarterParam}`))
+      applyGradebookResponse(gR)
+    } catch (err) { showToast(err.message) }
+  }
+
+  async function handleQuarterChange(quarter) {
+    setSelectedQuarter(quarter)
+    if (!selectedSubjectId) return
+    try {
+      const quarterParam = quarter !== 'all' ? `?quarter=${quarter}` : ''
+      const gR = await apiGet(withEducator(`/lms/subjects/${selectedSubjectId}/gradebook${quarterParam}`))
+      applyGradebookResponse(gR)
+    } catch (err) { showToast(err.message) }
   }
 
   /* ── render ─────────────────────────────────────────── */
@@ -2989,8 +3510,13 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 gradebook={gradebook}
                 atRiskStudents={atRiskStudents}
                 publishedActivities={gradebookPublishedActivities}
+                gradeWeights={gradeWeights}
+                selectedQuarter={selectedQuarter}
                 selectedSubject={selectedSubject}
                 onOpenPendingActivity={onOpenPendingActivity}
+                onSaveGradeWeights={handleSaveGradeWeights}
+                onSaveScore={handleSaveScore}
+                onQuarterChange={handleQuarterChange}
               />
             )}
           </div>

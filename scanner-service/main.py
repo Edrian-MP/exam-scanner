@@ -63,7 +63,8 @@ logger = logging.getLogger(__name__)
 PHP_API_BASE      = "http://localhost/exam-scanner/backend/api"
 SERIAL_PORT       = "COM4"
 SERIAL_BAUD       = 9600
-SERIAL_TIMEOUT    = 70      # seconds to wait for pre-feed clear + Arduino feed retries
+SERIAL_TIMEOUT    = 70      # total seconds to wait for pre-feed clear + Arduino feed retries
+SERIAL_READ_TIMEOUT = 0.2   # short serial poll interval so Stop Scan can interrupt FEED waits
 INTER_SHEET_DELAY = 0     # seconds between sheets
 MAX_UNREADABLE    = 40       # consecutive unreadable sheets before stopping
 STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
@@ -76,6 +77,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # This swaps the WIA scan extents so the full paper width is captured,
 # then rotates the result to portrait before OMR processing.
 LANDSCAPE_FEED_MODE = True
+FINAL_FEED_STATUSES = {"SHEET_FED", "NO_PAPER", "PAPER_JAM", "FEED_CANCELLED"}
 
 
 # ── Global state ──────────────────────────────────────────────────────────────
@@ -215,7 +217,9 @@ def scan_sheet_wia() -> "Image.Image":
         except Exception as exc:
             logger.debug("WIA property %s=%s was ignored: %s", prop_name, value, exc)
 
+    logger.info("WIA Transfer starting")
     image_file = item.Transfer("{B96B3CAB-0728-11D3-9D7B-0000F81EF32E}")  # BMP
+    logger.info("WIA Transfer completed")
     raw = bytes(image_file.FileData.BinaryData)
     image = Image.open(io.BytesIO(raw))
     logger.info("WIA returned scan size: %sx%s", image.width, image.height)
@@ -245,18 +249,35 @@ def feed_one_sheet(ser: Any) -> str:
     """Send FEED command and return the Arduino's final feed status."""
     if hasattr(ser, "reset_input_buffer"):
         ser.reset_input_buffer()
+    logger.info("FEED sent")
     send_arduino_command(ser, "FEED")
 
     deadline = time.time() + SERIAL_TIMEOUT
     while time.time() < deadline:
+        if STATE.should_stop():
+            logger.info("Stop requested during Arduino feed wait; sending STOP.")
+            send_arduino_command(ser, "STOP")
+            cancel_deadline = time.time() + 3.0
+            while time.time() < cancel_deadline:
+                line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                logger.info("Arduino feeder: %s", line)
+                if line in FINAL_FEED_STATUSES:
+                    return "FEED_CANCELLED"
+            return "FEED_CANCELLED"
+
         line = ser.readline().decode("utf-8", errors="ignore").strip()
         if not line:
             continue
         logger.info("Arduino feeder: %s", line)
         if line == "SHEET_FED":
+            logger.info("SHEET_FED received")
             return line
-        if line in {"NO_PAPER", "PAPER_JAM"}:
+        if line in FINAL_FEED_STATUSES:
             return line
+    logger.warning("Arduino feed timed out after %ss; sending STOP.", SERIAL_TIMEOUT)
+    send_arduino_command(ser, "STOP")
     return "TIMEOUT"
 
 
@@ -293,7 +314,7 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
 
         if use_hardware and _SERIAL_AVAILABLE:
             try:
-                ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_TIMEOUT)
+                ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_READ_TIMEOUT)
                 time.sleep(2)  # wait for Arduino to boot
                 send_arduino_command(ser, "BEEP_START")
             except Exception as exc:
@@ -306,6 +327,11 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
             # 1. Feed one sheet (Arduino or no-op in mock mode)
             if ser is not None:
                 feed_status = feed_one_sheet(ser)
+                if feed_status == "FEED_CANCELLED":
+                    logger.info("Arduino feed cancelled - stopping batch.")
+                    batch_reason = "stopped"
+                    batch_message = "Batch stopped."
+                    break
                 if feed_status == "NO_PAPER":
                     logger.info("No paper in feeder — stopping batch.")
                     batch_reason = "completed"
@@ -319,6 +345,11 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
                     break
             else:
                 time.sleep(0.2)  # simulate feed delay in mock mode
+
+            if STATE.should_stop():
+                batch_reason = "stopped"
+                batch_message = "Batch stopped."
+                break
 
             # 2. Scan — poll until paper is inserted, timeout, or stop requested.
             pil_image = None

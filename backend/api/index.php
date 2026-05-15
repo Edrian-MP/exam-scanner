@@ -1145,14 +1145,14 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
 
     if ($method === 'GET') {
         $stmt = db()->prepare(
-            'SELECT a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.publish_status, a.created_at,
+            'SELECT a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.grading_period, a.publish_status, a.created_at,
                     e.title AS exam_title,
                     COUNT(DISTINCT CASE WHEN sub.id IS NOT NULL THEN sub.id END) AS submission_count
              FROM subject_activities a
              LEFT JOIN exams e ON e.id = a.exam_id
              LEFT JOIN submissions sub ON sub.exam_id = a.exam_id
              WHERE a.subject_id = :subject_id
-             GROUP BY a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.publish_status, a.created_at, e.title
+             GROUP BY a.id, a.subject_id, a.title, a.activity_type, a.exam_id, a.exam_code, a.max_score, a.due_at, a.grading_period, a.publish_status, a.created_at, e.title
              ORDER BY COALESCE(a.due_at, a.created_at) DESC'
         );
         $stmt->execute([':subject_id' => $subjectId]);
@@ -1168,6 +1168,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
         $maxScore = (int) ($payload['max_score'] ?? 100);
         $dueAt = trim((string) ($payload['due_at'] ?? ''));
         $examCode = normalize_exam_code_input($payload['exam_code'] ?? '');
+        $gradingPeriod = strtoupper(trim((string) ($payload['grading_period'] ?? '')));
 
         if ($title === '') {
             json_response(400, ['ok' => false, 'error' => 'title is required']);
@@ -1181,6 +1182,11 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
         $validStatuses = ['draft', 'published', 'closed'];
         if (!in_array($publishStatus, $validStatuses, true)) {
             $publishStatus = 'draft';
+        }
+
+        $validPeriods = ['Q1', 'Q2', 'Q3', 'Q4'];
+        if (!in_array($gradingPeriod, $validPeriods, true)) {
+            json_response(422, ['ok' => false, 'error' => 'grading_period is required and must be Q1, Q2, Q3, or Q4']);
         }
 
         if ($maxScore < 1) {
@@ -1207,8 +1213,8 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
         }
 
         $insert = db()->prepare(
-            'INSERT INTO subject_activities (subject_id, title, activity_type, exam_id, exam_code, max_score, due_at, publish_status)
-             VALUES (:subject_id, :title, :activity_type, :exam_id, :exam_code, :max_score, :due_at, :publish_status)'
+            'INSERT INTO subject_activities (subject_id, title, activity_type, exam_id, exam_code, max_score, due_at, grading_period, publish_status)
+             VALUES (:subject_id, :title, :activity_type, :exam_id, :exam_code, :max_score, :due_at, :grading_period, :publish_status)'
         );
         $insert->execute([
             ':subject_id' => $subjectId,
@@ -1218,6 +1224,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
             ':exam_code' => $examCode,
             ':max_score' => $maxScore,
             ':due_at' => $dueAt !== '' ? $dueAt : null,
+            ':grading_period' => $gradingPeriod,
             ':publish_status' => $publishStatus,
         ]);
 
@@ -1255,6 +1262,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
         $maxScore = (int) ($payload['max_score'] ?? 100);
         $dueAt = trim((string) ($payload['due_at'] ?? ''));
         $examCode = normalize_exam_code_input($payload['exam_code'] ?? '');
+        $gradingPeriod = isset($payload['grading_period']) ? strtoupper(trim((string) $payload['grading_period'])) : null;
 
         if ($title === '') {
             json_response(400, ['ok' => false, 'error' => 'title is required']);
@@ -1268,6 +1276,11 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
         $validStatuses = ['draft', 'published', 'closed'];
         if (!in_array($publishStatus, $validStatuses, true)) {
             $publishStatus = 'draft';
+        }
+
+        $validPeriods = ['Q1', 'Q2', 'Q3', 'Q4'];
+        if ($gradingPeriod !== null && !in_array($gradingPeriod, $validPeriods, true)) {
+            json_response(422, ['ok' => false, 'error' => 'grading_period must be Q1, Q2, Q3, or Q4']);
         }
 
         if ($maxScore < 1) {
@@ -1297,6 +1310,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
                  exam_code = :exam_code,
                  max_score = :max_score,
                  due_at = :due_at,
+                 grading_period = :grading_period,
                  publish_status = :publish_status
              WHERE id = :id AND subject_id = :subject_id'
         );
@@ -1309,6 +1323,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
             ':exam_code' => $examCode,
             ':max_score' => $maxScore,
             ':due_at' => $dueAt !== '' ? $dueAt : null,
+            ':grading_period' => $gradingPeriod,
             ':publish_status' => $publishStatus,
         ]);
 
@@ -1426,17 +1441,111 @@ if (preg_match('#^/lms/subjects/(\d+)/announcements/(\d+)$#', $path, $matches)) 
     }
 }
 
-if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method === 'GET') {
+/* ── Grade Weights ──────────────────────────────────────────────── */
+if (preg_match('#^/lms/subjects/(\d+)/grade-weights$#', $path, $matches)) {
     $educatorId = require_lms_educator_id();
     $subjectId = (int) $matches[1];
     find_subject_or_404($subjectId, $educatorId);
 
+    if ($method === 'GET') {
+        $stmt = db()->prepare(
+            'SELECT written_work_weight, performance_task_weight, quarterly_assessment_weight
+             FROM subject_grade_weights
+             WHERE subject_id = :subject_id
+             LIMIT 1'
+        );
+        $stmt->execute([':subject_id' => $subjectId]);
+        $row = $stmt->fetch();
+        json_response(200, ['ok' => true, 'data' => [
+            'written_work'          => $row ? (float) $row['written_work_weight'] : 0,
+            'performance_task'      => $row ? (float) $row['performance_task_weight'] : 0,
+            'quarterly_assessment'  => $row ? (float) $row['quarterly_assessment_weight'] : 0,
+        ]]);
+    }
+
+    if ($method === 'PUT') {
+        $payload = request_json();
+        $ww  = max(0, min(100, (float) ($payload['written_work'] ?? 0)));
+        $pt  = max(0, min(100, (float) ($payload['performance_task'] ?? 0)));
+        $qa  = max(0, min(100, (float) ($payload['quarterly_assessment'] ?? 0)));
+
+        $stmt = db()->prepare(
+            'INSERT INTO subject_grade_weights (subject_id, written_work_weight, performance_task_weight, quarterly_assessment_weight)
+             VALUES (:subject_id, :ww, :pt, :qa)
+             ON DUPLICATE KEY UPDATE
+               written_work_weight = :ww2,
+               performance_task_weight = :pt2,
+               quarterly_assessment_weight = :qa2'
+        );
+        $stmt->execute([
+            ':subject_id' => $subjectId,
+            ':ww' => $ww, ':pt' => $pt, ':qa' => $qa,
+            ':ww2' => $ww, ':pt2' => $pt, ':qa2' => $qa,
+        ]);
+        json_response(200, ['ok' => true]);
+    }
+}
+
+/* ── Manual Activity Scores (WW / PT) ──────────────────────────── */
+if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)/scores$#', $path, $matches) && $method === 'PUT') {
+    $educatorId = require_lms_educator_id();
+    $subjectId  = (int) $matches[1];
+    $activityId = (int) $matches[2];
+    find_subject_or_404($subjectId, $educatorId);
+
+    $actStmt = db()->prepare(
+        'SELECT id, activity_type FROM subject_activities WHERE id = :id AND subject_id = :sid LIMIT 1'
+    );
+    $actStmt->execute([':id' => $activityId, ':sid' => $subjectId]);
+    $act = $actStmt->fetch();
+    if (!$act) {
+        json_response(404, ['ok' => false, 'error' => 'Activity not found']);
+    }
+    if ($act['activity_type'] === 'exam') {
+        json_response(422, ['ok' => false, 'error' => 'Scores for exam activities are recorded via the scanner, not manually']);
+    }
+
+    $payload = request_json();
+    $scores = $payload['scores'] ?? [];
+    if (!is_array($scores)) {
+        json_response(400, ['ok' => false, 'error' => 'scores must be an array']);
+    }
+
+    $upsert = db()->prepare(
+        'INSERT INTO subject_activity_scores (activity_id, student_id, score)
+         VALUES (:activity_id, :student_id, :score)
+         ON DUPLICATE KEY UPDATE score = :score2, recorded_at = CURRENT_TIMESTAMP'
+    );
+    $updated = 0;
+    foreach ($scores as $entry) {
+        $studentId = (int) ($entry['student_id'] ?? 0);
+        $score = isset($entry['score']) && $entry['score'] !== null && $entry['score'] !== ''
+            ? (float) $entry['score']
+            : null;
+        if ($studentId < 1) continue;
+        $upsert->execute([
+            ':activity_id' => $activityId,
+            ':student_id'  => $studentId,
+            ':score'       => $score,
+            ':score2'      => $score,
+        ]);
+        $updated++;
+    }
+    json_response(200, ['ok' => true, 'data' => ['updated' => $updated]]);
+}
+
+if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method === 'GET') {
+    $educatorId = require_lms_educator_id();
+    $subjectId  = (int) $matches[1];
+    find_subject_or_404($subjectId, $educatorId);
+
+    $quarter = strtoupper(trim((string) ($_GET['quarter'] ?? '')));
+    $validQuarters = ['Q1', 'Q2', 'Q3', 'Q4'];
+    $quarterFilter = in_array($quarter, $validQuarters, true) ? $quarter : null;
+
+    // ── Students enrolled in this subject ────────────────────────────
     $studentsStmt = db()->prepare(
-        'SELECT st.id AS student_id,
-                st.student_code,
-                st.surname,
-                st.given_name,
-                st.middle_name
+        'SELECT st.id AS student_id, st.student_code, st.surname, st.given_name, st.middle_name
          FROM subject_students ss
          INNER JOIN students st ON st.id = ss.student_id
          WHERE ss.subject_id = :subject_id
@@ -1445,142 +1554,227 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
     $studentsStmt->execute([':subject_id' => $subjectId]);
     $students = $studentsStmt->fetchAll();
 
-    $publishedStmt = db()->prepare(
-        'SELECT a.id AS activity_id,
-                a.title,
-                a.activity_type,
-                a.exam_id,
-                a.max_score,
-                a.due_at,
-                a.created_at,
-                ex.total_items
-         FROM subject_activities a
-         LEFT JOIN exams ex ON ex.id = a.exam_id
-         WHERE a.subject_id = :subject_id
-           AND a.publish_status = "published"
-         ORDER BY COALESCE(a.due_at, a.created_at) ASC, a.id ASC'
-    );
-    $publishedStmt->execute([':subject_id' => $subjectId]);
+    // ── Published activities (optionally filtered by quarter) ─────────
+    $actSql = 'SELECT a.id AS activity_id, a.title, a.activity_type, a.exam_id,
+                      a.max_score, a.due_at, a.grading_period, a.created_at, ex.total_items
+               FROM subject_activities a
+               LEFT JOIN exams ex ON ex.id = a.exam_id
+               WHERE a.subject_id = :subject_id
+                 AND a.publish_status = "published"';
+    if ($quarterFilter !== null) {
+        $actSql .= ' AND a.grading_period = :quarter';
+    }
+    $actSql .= ' ORDER BY COALESCE(a.due_at, a.created_at) ASC, a.id ASC';
+    $publishedStmt = db()->prepare($actSql);
+    $bindAct = [':subject_id' => $subjectId];
+    if ($quarterFilter !== null) $bindAct[':quarter'] = $quarterFilter;
+    $publishedStmt->execute($bindAct);
+
     $publishedActivities = array_map(static function (array $row): array {
         return [
-            'activity_id' => (int) ($row['activity_id'] ?? 0),
-            'title' => (string) ($row['title'] ?? ''),
+            'activity_id'   => (int) ($row['activity_id'] ?? 0),
+            'title'         => (string) ($row['title'] ?? ''),
             'activity_type' => (string) ($row['activity_type'] ?? 'activity'),
-            'exam_id' => isset($row['exam_id']) ? (int) $row['exam_id'] : null,
-            'max_score' => (int) ($row['max_score'] ?? 0),
-            'due_at' => $row['due_at'] ?? null,
-            'total_items' => isset($row['total_items']) ? (int) $row['total_items'] : null,
+            'exam_id'       => isset($row['exam_id']) ? (int) $row['exam_id'] : null,
+            'max_score'     => (float) ($row['max_score'] ?? 0),
+            'due_at'        => $row['due_at'] ?? null,
+            'grading_period'=> $row['grading_period'] ?? null,
+            'total_items'   => isset($row['total_items']) ? (int) $row['total_items'] : null,
         ];
     }, $publishedStmt->fetchAll());
 
+    // ── Separate activity lists by component type ─────────────────────
+    $wwActivities  = array_filter($publishedActivities, fn($a) => $a['activity_type'] === 'quiz');
+    $ptActivities  = array_filter($publishedActivities, fn($a) => $a['activity_type'] === 'activity');
+    $qaActivities  = array_filter($publishedActivities, fn($a) => $a['activity_type'] === 'exam');
+
+    // ── Latest QA (exam) scores per student/exam ──────────────────────
     $scoredExamIds = [];
-    foreach ($publishedActivities as $activity) {
-        if (($activity['exam_id'] ?? null) !== null) {
-            $scoredExamIds[(int) $activity['exam_id']] = true;
-        }
+    foreach ($qaActivities as $act) {
+        if ($act['exam_id'] !== null) $scoredExamIds[$act['exam_id']] = true;
     }
     $scoredExamIds = array_values(array_map('intval', array_keys($scoredExamIds)));
 
-    $scoresByStudent = [];
+    $latestScoresByStudent = [];
     if (count($scoredExamIds) > 0) {
-        $placeholders = implode(',', array_fill(0, count($scoredExamIds), '?'));
-        $scoresSql = sprintf(
-            'SELECT s.student_code, s.exam_id, MAX(s.score) AS best_score
+        $ph = implode(',', array_fill(0, count($scoredExamIds), '?'));
+        $latestSql = sprintf(
+            'SELECT s.student_code, s.exam_id, s.score
              FROM submissions s
              WHERE s.exam_id IN (%s)
-             GROUP BY s.student_code, s.exam_id',
-            $placeholders
+               AND s.id IN (
+                 SELECT s2.id FROM submissions s2
+                 WHERE s2.exam_id IN (%s)
+                   AND s2.created_at = (
+                     SELECT MAX(s3.created_at) FROM submissions s3
+                     WHERE s3.student_code = s2.student_code AND s3.exam_id = s2.exam_id
+                   )
+               )',
+            $ph, $ph
         );
-        $scoresStmt = db()->prepare($scoresSql);
-        $scoresStmt->execute($scoredExamIds);
-        foreach ($scoresStmt->fetchAll() as $scoreRow) {
-            $studentCode = strtoupper(trim((string) ($scoreRow['student_code'] ?? '')));
-            $examId = (int) ($scoreRow['exam_id'] ?? 0);
-            $bestScore = (int) ($scoreRow['best_score'] ?? 0);
-            if ($studentCode === '' || $examId < 1) {
-                continue;
-            }
-            if (!isset($scoresByStudent[$studentCode])) {
-                $scoresByStudent[$studentCode] = [];
-            }
-            $scoresByStudent[$studentCode][$examId] = $bestScore;
+        $latestStmt = db()->prepare($latestSql);
+        $latestStmt->execute(array_merge($scoredExamIds, $scoredExamIds));
+        foreach ($latestStmt->fetchAll() as $sr) {
+            $sc  = strtoupper(trim((string) ($sr['student_code'] ?? '')));
+            $eid = (int) ($sr['exam_id'] ?? 0);
+            if ($sc === '' || $eid < 1) continue;
+            if (!isset($latestScoresByStudent[$sc])) $latestScoresByStudent[$sc] = [];
+            $latestScoresByStudent[$sc][$eid] = (float) $sr['score'];
         }
     }
 
+    // ── Manual scores (WW / PT) keyed by [student_id][activity_id] ───
+    $wwPtActivityIds = array_values(array_map(
+        fn($a) => $a['activity_id'],
+        array_merge(array_values($wwActivities), array_values($ptActivities))
+    ));
+    $manualScoresByStudent = [];
+    if (count($wwPtActivityIds) > 0) {
+        $mph = implode(',', array_fill(0, count($wwPtActivityIds), '?'));
+        $manualStmt = db()->prepare(sprintf(
+            'SELECT sas.activity_id, sas.student_id, sas.score
+             FROM subject_activity_scores sas
+             WHERE sas.activity_id IN (%s)', $mph
+        ));
+        $manualStmt->execute($wwPtActivityIds);
+        foreach ($manualStmt->fetchAll() as $mr) {
+            $sid = (int) ($mr['student_id'] ?? 0);
+            $aid = (int) ($mr['activity_id'] ?? 0);
+            if ($sid < 1 || $aid < 1) continue;
+            if (!isset($manualScoresByStudent[$sid])) $manualScoresByStudent[$sid] = [];
+            $manualScoresByStudent[$sid][$aid] = $mr['score'] !== null ? (float) $mr['score'] : null;
+        }
+    }
+
+    // ── Grade weights ─────────────────────────────────────────────────
+    $gwStmt = db()->prepare(
+        'SELECT written_work_weight, performance_task_weight, quarterly_assessment_weight
+         FROM subject_grade_weights WHERE subject_id = :sid LIMIT 1'
+    );
+    $gwStmt->execute([':sid' => $subjectId]);
+    $gwRow = $gwStmt->fetch();
+    $gradeWeights = [
+        'written_work'         => $gwRow ? (float) $gwRow['written_work_weight'] : 0,
+        'performance_task'     => $gwRow ? (float) $gwRow['performance_task_weight'] : 0,
+        'quarterly_assessment' => $gwRow ? (float) $gwRow['quarterly_assessment_weight'] : 0,
+    ];
+
+    // ── Build per-student rows ────────────────────────────────────────
     $rows = [];
     foreach ($students as $student) {
+        $studentId      = (int) ($student['student_id'] ?? 0);
         $studentCodeRaw = (string) ($student['student_code'] ?? '');
-        $studentCode = strtoupper(trim($studentCodeRaw));
-        $studentScores = $scoresByStudent[$studentCode] ?? [];
+        $studentCode    = strtoupper(trim($studentCodeRaw));
+        $qaScores       = $latestScoresByStudent[$studentCode] ?? [];
+        $manualScores   = $manualScoresByStudent[$studentId]   ?? [];
 
-        $publishedCount = count($publishedActivities);
-        $completedCount = 0;
-        $percentSum = 0.0;
         $details = [];
 
-        foreach ($publishedActivities as $activity) {
-            $examId = $activity['exam_id'];
-            $totalItems = $activity['total_items'];
-            $score = null;
-            $percent = null;
-            $status = 'posted';
-
-            if ($examId !== null && isset($studentScores[(int) $examId])) {
-                $score = (int) $studentScores[(int) $examId];
-                $status = 'checked';
-                $completedCount++;
-            } elseif ($examId !== null) {
-                $status = 'pending';
-            }
-
-            $activityTotalItems = 0;
-            if ($totalItems !== null && (int) $totalItems > 0) {
-                $activityTotalItems = (int) $totalItems;
-            } elseif ((int) ($activity['max_score'] ?? 0) > 0) {
-                // Fallback for activities without linked exam total_items.
-                $activityTotalItems = (int) $activity['max_score'];
-            }
-
-            if ($activityTotalItems > 0) {
-                $percent = round((max(0, min((int) ($score ?? 0), $activityTotalItems)) / $activityTotalItems) * 100, 2);
-            }
-            $percentSum += (float) ($percent ?? 0.0);
-
+        // Written Work details
+        $wwEarned = 0.0; $wwPossible = 0.0;
+        foreach ($wwActivities as $act) {
+            $aid   = $act['activity_id'];
+            $score = $manualScores[$aid] ?? null;
+            $wwPossible += (float) $act['max_score'];
+            if ($score !== null) $wwEarned += $score;
             $details[] = [
-                'activity_id' => (int) $activity['activity_id'],
-                'title' => (string) $activity['title'],
-                'activity_type' => (string) $activity['activity_type'],
-                'exam_id' => $examId,
-                'max_score' => (int) $activity['max_score'],
-                'total_items' => $totalItems,
-                'status' => $status,
-                'score' => $score,
-                'percent' => $percent,
+                'activity_id'    => $aid,
+                'title'          => $act['title'],
+                'activity_type'  => $act['activity_type'],
+                'grading_period' => $act['grading_period'],
+                'max_score'      => $act['max_score'],
+                'score'          => $score,
+                'status'         => $score !== null ? 'checked' : 'posted',
             ];
         }
+        $wwPct = $wwPossible > 0 ? round(($wwEarned / $wwPossible) * 100, 2) : null;
 
-        $averagePercent = $publishedCount > 0
-            ? round($percentSum / $publishedCount, 2)
-            : null;
+        // Performance Task details
+        $ptEarned = 0.0; $ptPossible = 0.0;
+        foreach ($ptActivities as $act) {
+            $aid   = $act['activity_id'];
+            $score = $manualScores[$aid] ?? null;
+            $ptPossible += (float) $act['max_score'];
+            if ($score !== null) $ptEarned += $score;
+            $details[] = [
+                'activity_id'    => $aid,
+                'title'          => $act['title'],
+                'activity_type'  => $act['activity_type'],
+                'grading_period' => $act['grading_period'],
+                'max_score'      => $act['max_score'],
+                'score'          => $score,
+                'status'         => $score !== null ? 'checked' : 'posted',
+            ];
+        }
+        $ptPct = $ptPossible > 0 ? round(($ptEarned / $ptPossible) * 100, 2) : null;
+
+        // Quarterly Assessment details
+        $qaEarned = 0.0; $qaPossible = 0.0;
+        foreach ($qaActivities as $act) {
+            $aid        = $act['activity_id'];
+            $examId     = $act['exam_id'];
+            $totalItems = $act['total_items'] ?? $act['max_score'];
+            $score      = ($examId !== null && isset($qaScores[$examId])) ? $qaScores[$examId] : null;
+            $qaPossible += (float) ($totalItems > 0 ? $totalItems : $act['max_score']);
+            if ($score !== null) $qaEarned += $score;
+            $details[] = [
+                'activity_id'    => $aid,
+                'title'          => $act['title'],
+                'activity_type'  => $act['activity_type'],
+                'grading_period' => $act['grading_period'],
+                'exam_id'        => $examId,
+                'max_score'      => $act['max_score'],
+                'total_items'    => $act['total_items'],
+                'score'          => $score,
+                'status'         => $score !== null ? 'checked' : ($examId !== null ? 'pending' : 'posted'),
+            ];
+        }
+        $qaPct = $qaPossible > 0 ? round(($qaEarned / $qaPossible) * 100, 2) : null;
+
+        // Weighted final grade (only components with activities and non-zero weight)
+        $finalGrade = null;
+        $totalWeight = 0.0;
+        $weightedSum = 0.0;
+        if ($wwPossible > 0 && $gradeWeights['written_work'] > 0) {
+            $weightedSum += ($wwPct ?? 0) * ($gradeWeights['written_work'] / 100);
+            $totalWeight += $gradeWeights['written_work'];
+        }
+        if ($ptPossible > 0 && $gradeWeights['performance_task'] > 0) {
+            $weightedSum += ($ptPct ?? 0) * ($gradeWeights['performance_task'] / 100);
+            $totalWeight += $gradeWeights['performance_task'];
+        }
+        if ($qaPossible > 0 && $gradeWeights['quarterly_assessment'] > 0) {
+            $weightedSum += ($qaPct ?? 0) * ($gradeWeights['quarterly_assessment'] / 100);
+            $totalWeight += $gradeWeights['quarterly_assessment'];
+        }
+        if ($totalWeight > 0) {
+            $finalGrade = round($weightedSum, 2);
+        }
 
         $rows[] = [
-            'student_id' => (int) ($student['student_id'] ?? 0),
-            'student_code' => $studentCodeRaw,
-            'surname' => (string) ($student['surname'] ?? ''),
-            'given_name' => (string) ($student['given_name'] ?? ''),
-            'middle_name' => (string) ($student['middle_name'] ?? ''),
-            'published_activities' => $publishedCount,
-            'completed_activities' => $completedCount,
-            'average_percent' => $averagePercent,
-            'published_details' => $details,
+            'student_id'       => $studentId,
+            'student_code'     => $studentCodeRaw,
+            'surname'          => (string) ($student['surname'] ?? ''),
+            'given_name'       => (string) ($student['given_name'] ?? ''),
+            'middle_name'      => (string) ($student['middle_name'] ?? ''),
+            'ww_component_pct' => $wwPct,
+            'pt_component_pct' => $ptPct,
+            'qa_component_pct' => $qaPct,
+            'final_grade'      => $finalGrade,
+            'published_details'=> $details,
+            // legacy fields kept for backward compat
+            'published_activities' => count($publishedActivities),
+            'completed_activities' => count(array_filter($details, fn($d) => $d['status'] === 'checked')),
+            'average_percent'  => $finalGrade,
         ];
     }
 
     json_response(200, [
         'ok' => true,
         'data' => [
-            'rows' => $rows,
-            'published_activities' => $publishedActivities,
+            'rows'                => $rows,
+            'published_activities'=> $publishedActivities,
+            'grade_weights'       => $gradeWeights,
         ],
     ]);
 }

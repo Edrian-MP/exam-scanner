@@ -10,7 +10,16 @@ int ENA = 9;   // PWM pin
 int IN1 = 8;
 int IN2 = 7;
 
-String input = "";
+String serialBuffer = "";
+bool feedCancelled = false;
+
+bool readSerialLine(String &line);
+void handleIdleCommand(String command);
+void reportSensorChanges();
+bool consumeStopCommand();
+bool delayWithStop(unsigned long durationMs);
+void finishFeed(const char *status);
+bool runSequence();
 
 const unsigned long PAPER_REACH_TIMEOUT_MS = 3000;
 const unsigned long PRE_FEED_CLEAR_TIMEOUT_MS = 30000;
@@ -114,6 +123,11 @@ bool waitForScannerPaperState(bool targetState, unsigned long timeoutMs) {
   unsigned long startedAt = millis();
 
   while (isScannerPaperDetected() != targetState) {
+    updateJamAlarm();
+    reportSensorChanges();
+    if (consumeStopCommand()) {
+      return false;
+    }
     if (millis() - startedAt >= timeoutMs) {
       return false;
     }
@@ -142,7 +156,49 @@ void setup() {
 
 void loop() {
   updateJamAlarm();
+  reportSensorChanges();
 
+  String command;
+  if (readSerialLine(command)) {
+    handleIdleCommand(command);
+  }
+}
+
+bool readSerialLine(String &line) {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      line = serialBuffer;
+      line.trim();
+      serialBuffer = "";
+      return line.length() > 0;
+    }
+    if (serialBuffer.length() < 64) {
+      serialBuffer += c;
+    }
+  }
+  return false;
+}
+
+void handleIdleCommand(String command) {
+  if (command == "FEED" || command == "g") {
+    feedOneSheet();
+  } else if (command == "STOP") {
+    stopMotor();
+    Serial.println("FEED_CANCELLED");
+  } else if (command == "BEEP_START") {
+    beepLongOnce();
+  } else if (command == "BEEP_FINISH") {
+    beepShortPattern(3);
+  } else if (command == "BEEP_CANCEL_FAILURES") {
+    beepShortPattern(5);
+  }
+}
+
+void reportSensorChanges() {
   int currentScannerState = digitalRead(scannerSensor);
   int currentTrayState = digitalRead(traySensor);
 
@@ -157,94 +213,132 @@ void loop() {
     Serial.println(currentTrayState);
     lastTrayState = currentTrayState;
   }
+}
 
-  if (Serial.available()) {
-    input = Serial.readStringUntil('\n');
-    input.trim();
-
-    if (input == "FEED" || input == "g") {
-      feedOneSheet();
-    } else if (input == "BEEP_START") {
-      beepLongOnce();
-    } else if (input == "BEEP_FINISH") {
-      beepShortPattern(3);
-    } else if (input == "BEEP_CANCEL_FAILURES") {
-      beepShortPattern(5);
+bool consumeStopCommand() {
+  String command;
+  while (readSerialLine(command)) {
+    if (command == "STOP") {
+      feedCancelled = true;
+      stopMotor();
+      return true;
     }
   }
+  return false;
+}
+
+bool delayWithStop(unsigned long durationMs) {
+  unsigned long startedAt = millis();
+
+  while (millis() - startedAt < durationMs) {
+    updateJamAlarm();
+    reportSensorChanges();
+    if (consumeStopCommand()) {
+      return false;
+    }
+    delay(SENSOR_POLL_MS);
+  }
+
+  return true;
+}
+
+void finishFeed(const char *status) {
+  stopMotor();
+  Serial.println(status);
+  feedCancelled = false;
 }
 
 void feedOneSheet() {
+  feedCancelled = false;
+  Serial.println("FEED_STARTED");
+
   if (!isTrayPaperDetected()) {
-    stopMotor();
-    Serial.println("NO_PAPER");
+    finishFeed("NO_PAPER");
     return;
   }
 
   if (!waitForScannerPaperState(false, PRE_FEED_CLEAR_TIMEOUT_MS)) {
+    if (feedCancelled) {
+      finishFeed("FEED_CANCELLED");
+      return;
+    }
     stopMotor();
     startJamAlarm();
-    Serial.println("PAPER_JAM");
+    finishFeed("PAPER_JAM");
     return;
   }
 
-  delay(POST_CLEAR_DELAY_MS);
+  if (!delayWithStop(POST_CLEAR_DELAY_MS)) {
+    finishFeed("FEED_CANCELLED");
+    return;
+  }
 
   for (int attempt = 1; attempt <= MAX_FEED_ATTEMPTS; attempt++) {
-    runSequence();
+    Serial.print("FEED_ATTEMPT:");
+    Serial.println(attempt);
+
+    if (!runSequence()) {
+      finishFeed("FEED_CANCELLED");
+      return;
+    }
     stopMotor();
 
     if (waitForScannerPaperState(true, PAPER_REACH_TIMEOUT_MS)) {
-      stopMotor();
-      Serial.println("SHEET_FED");
+      Serial.println("SCANNER_SENSOR_DETECTED");
+      finishFeed("SHEET_FED");
+      return;
+    }
+    if (feedCancelled) {
+      finishFeed("FEED_CANCELLED");
       return;
     }
   }
 
   stopMotor();
   startJamAlarm();
-  Serial.println("PAPER_JAM");
+  finishFeed("PAPER_JAM");
 }
 
-void runSequence() {
+bool runSequence() {
   // Feed IN
   digitalWrite(LED_BUILTIN, HIGH);
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   analogWrite(ENA, 255);
   digitalWrite(LED_BUILTIN, LOW);
-  delay(650);
+  if (!delayWithStop(650)) return false;
 
   // brake
   analogWrite(ENA, 0);
-  delay(500);
+  if (!delayWithStop(500)) return false;
 
   // feed out
   digitalWrite(LED_BUILTIN, HIGH);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   analogWrite(ENA, 200);
-  delay(500);
+  if (!delayWithStop(500)) return false;
 
   digitalWrite(LED_BUILTIN, HIGH);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   analogWrite(ENA, 200);
-  delay(800);
+  if (!delayWithStop(800)) return false;
 
   analogWrite(ENA, 0);
-  delay(500);
+  if (!delayWithStop(500)) return false;
 
   // after push
   digitalWrite(LED_BUILTIN, HIGH);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   analogWrite(ENA, 255);
-  delay(500);
+  if (!delayWithStop(500)) return false;
 
   // brake
   analogWrite(ENA, 0);
-  delay(1000);
+  if (!delayWithStop(1000)) return false;
 
   stopMotor();
+  return true;
 }

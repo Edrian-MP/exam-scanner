@@ -110,6 +110,27 @@ CREATE TABLE IF NOT EXISTS subject_activities (
     ON UPDATE CASCADE
 );
 
+-- Run once on existing databases: ALTER TABLE subject_activities ADD COLUMN grading_period ENUM('Q1','Q2','Q3','Q4') NULL AFTER due_at;
+CREATE TABLE IF NOT EXISTS subject_activity_scores (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  activity_id INT NOT NULL,
+  student_id INT NOT NULL,
+  score DECIMAL(8,2) NULL,
+  recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_activity_student (activity_id, student_id),
+  CONSTRAINT fk_sas_activity FOREIGN KEY (activity_id) REFERENCES subject_activities(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_sas_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS subject_grade_weights (
+  subject_id INT NOT NULL,
+  written_work_weight DECIMAL(5,2) NOT NULL DEFAULT 0,
+  performance_task_weight DECIMAL(5,2) NOT NULL DEFAULT 0,
+  quarterly_assessment_weight DECIMAL(5,2) NOT NULL DEFAULT 0,
+  PRIMARY KEY (subject_id),
+  CONSTRAINT fk_sgw_subject FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS subject_announcements (
   id INT AUTO_INCREMENT PRIMARY KEY,
   subject_id INT NOT NULL,

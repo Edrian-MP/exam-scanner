@@ -145,7 +145,7 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [pdfImportStatus, setPdfImportStatus] = useState('')
-  const [scanSession, setScanSession] = useState(null)   // null | { session_id, status: 'scanning'|'review' }
+  const [scanSession, setScanSession] = useState(null)   // null | { session_id, status: 'scanning'|'stopping'|'review' }
   const [stagedSheets, setStagedSheets] = useState([])
   const answerKeyRef = useRef(null)
   const gradeAnswersRef = useRef(null)
@@ -291,7 +291,9 @@ function App() {
   // ── Batch scan ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!scanSessionId || scanSessionStatus !== 'scanning') {
+    const shouldPollBatch =
+      scanSessionStatus === 'scanning' || scanSessionStatus === 'stopping'
+    if (!scanSessionId || !shouldPollBatch) {
       if (scanPollRef.current != null) {
         clearTimeout(scanPollRef.current)
         scanPollRef.current = null
@@ -344,7 +346,8 @@ function App() {
         }
 
         setScanSession((prev) =>
-          prev?.session_id === sid && prev.status === 'scanning'
+          prev?.session_id === sid &&
+          (prev.status === 'scanning' || prev.status === 'stopping')
             ? { ...prev, status: 'review' }
             : prev
         )
@@ -402,35 +405,24 @@ function App() {
   }
 
   async function onStopBatchScan() {
+    if (!scanSession?.session_id) return
     setBusy(true)
     setError('')
-    let stopped = false
     try {
       await apiPost('/scanner/batch-stop', {
-        session_id: scanSession?.session_id,
-        wait: true,
+        session_id: scanSession.session_id,
+        wait: false,
       })
-      const idle = await waitForScannerIdle()
-      if (!idle) throw new Error('Scanner is still stopping. Please try again in a moment.')
-      stopped = true
+      setScanSession((prev) =>
+        prev?.session_id === scanSession.session_id
+          ? { ...prev, status: 'stopping' }
+          : prev
+      )
     } catch (err) {
       setError(err.message)
-    }
-    if (!stopped) {
+    } finally {
       setBusy(false)
-      return
     }
-    // Do a final poll then move to review
-    if (scanSession?.session_id) {
-      try {
-        const res = await apiGet(`/scan/session/${scanSession.session_id}/results`)
-        setStagedSheets(res.data?.sheets || [])
-      } catch {
-        // ignore
-      }
-    }
-    setScanSession((prev) => prev ? { ...prev, status: 'review' } : null)
-    setBusy(false)
   }
 
   async function onCommitSession(sheets) {
