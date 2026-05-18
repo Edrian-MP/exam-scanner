@@ -16,11 +16,13 @@ function applyValue(el, newValue) {
 export function OSKProvider({ children }) {
   const [visible, setVisible] = useState(false)
   const [keyboardType, setKeyboardType] = useState('qwerty')
-  const activeElRef          = useRef(null)
-  const paddedNodeRef        = useRef(null)  // scroll container that was padded
-  const paddedNodeRestoreRef = useRef('')    // its original paddingBottom (in ref, not on DOM node)
-  const bodyPadRestoreRef    = useRef('')    // document.body's original paddingBottom
-  const hideTimeoutRef       = useRef(null)  // pending hideOSK cleanup timer
+  const activeElRef             = useRef(null)
+  const paddedNodeRef           = useRef(null)   // scroll container that was padded
+  const paddedNodeRestoreRef    = useRef('')     // its original paddingBottom
+  const scrollParentIsPaddedRef = useRef(false)  // whether scroll container is currently padded
+  const bodyPadRestoreRef       = useRef('')     // document.body's original paddingBottom
+  const bodyIsPaddedRef         = useRef(false)  // whether body is currently padded
+  const hideTimeoutRef          = useRef(null)   // pending hideOSK cleanup timer
 
   function findScrollParent(el) {
     let node = el.parentElement
@@ -50,17 +52,23 @@ export function OSKProvider({ children }) {
 
         const scrollParent = findScrollParent(el)
 
-        // Always pad document.body — makes the page scrollable even when there
-        // is no inner scroll container (e.g. Login, AccountSettings)
-        bodyPadRestoreRef.current = document.body.style.paddingBottom
+        // Always pad document.body so the page is scrollable on any page.
+        // Guard: only capture the restore value on the FIRST showOSK call —
+        // field-to-field taps must NOT overwrite it or the padding is never removed.
+        if (!bodyIsPaddedRef.current) {
+          bodyPadRestoreRef.current = document.body.style.paddingBottom
+          bodyIsPaddedRef.current = true
+        }
         document.body.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
 
-        // Also pad the nearest scroll container (e.g. gradebook table)
-        // Store restore value in a ref, NOT on the DOM node, so it survives
-        // React re-renders that replace the DOM element
+        // Also pad the nearest scroll container (e.g. gradebook table).
+        // Same guard: only capture restore value on first padding.
         if (scrollParent) {
-          paddedNodeRef.current = scrollParent
-          paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
+          if (!scrollParentIsPaddedRef.current) {
+            paddedNodeRef.current = scrollParent
+            paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
+            scrollParentIsPaddedRef.current = true
+          }
           scrollParent.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
         }
 
@@ -101,10 +109,12 @@ export function OSKProvider({ children }) {
         }
         paddedNodeRef.current = null
         paddedNodeRestoreRef.current = ''
+        scrollParentIsPaddedRef.current = false
 
         // Restore document.body padding and clamp window scroll
         document.body.style.paddingBottom = bodyPadRestoreRef.current
         bodyPadRestoreRef.current = ''
+        bodyIsPaddedRef.current = false
         requestAnimationFrame(() => {
           try {
             const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
