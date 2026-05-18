@@ -47,14 +47,13 @@ export function OSKProvider({ children }) {
     setTimeout(() => {
       try {
         const KBD_HEIGHT = type === 'numeric' ? 258 : 232
-        const CLEARANCE = 24
 
         const scrollParent = findScrollParent(el)
 
         // Always pad document.body — makes the page scrollable even when there
         // is no inner scroll container (e.g. Login, AccountSettings)
         bodyPadRestoreRef.current = document.body.style.paddingBottom
-        document.body.style.paddingBottom = (KBD_HEIGHT + CLEARANCE) + 'px'
+        document.body.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
 
         // Also pad the nearest scroll container (e.g. gradebook table)
         // Store restore value in a ref, NOT on the DOM node, so it survives
@@ -62,15 +61,19 @@ export function OSKProvider({ children }) {
         if (scrollParent) {
           paddedNodeRef.current = scrollParent
           paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
-          scrollParent.style.paddingBottom = (KBD_HEIGHT + CLEARANCE) + 'px'
+          scrollParent.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
         }
 
-        // Scroll after layout recalculates with new padding
+        // Scroll after layout recalculates with new padding.
+        // Sweet spot: target element bottom at 60% of available height —
+        // leaves 40% breathing room between element and keyboard top.
+        // Applies to every field on every page universally.
         requestAnimationFrame(() => {
           const elRect = el.getBoundingClientRect()
-          const safeBottom = window.innerHeight - KBD_HEIGHT - CLEARANCE
-          if (elRect.bottom > safeBottom) {
-            const delta = elRect.bottom - safeBottom
+          const availH = window.innerHeight - KBD_HEIGHT
+          const sweetBottom = availH * 0.60
+          if (elRect.bottom > sweetBottom) {
+            const delta = elRect.bottom - sweetBottom
             if (scrollParent) scrollParent.scrollBy({ top: delta, behavior: 'smooth' })
             window.scrollBy({ top: delta, behavior: 'smooth' })
           }
