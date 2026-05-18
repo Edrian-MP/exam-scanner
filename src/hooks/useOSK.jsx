@@ -52,35 +52,38 @@ export function OSKProvider({ children }) {
 
         const scrollParent = findScrollParent(el)
 
-        // Always pad document.body so the page is scrollable on any page.
-        // Guard: only capture the restore value on the FIRST showOSK call —
-        // field-to-field taps must NOT overwrite it or the padding is never removed.
-        if (!bodyIsPaddedRef.current) {
-          bodyPadRestoreRef.current = document.body.style.paddingBottom
-          bodyIsPaddedRef.current = true
-        }
-        document.body.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
-
-        // Also pad the nearest scroll container (e.g. gradebook table).
-        // Same guard: only capture restore value on first padding.
+        // Pad exactly ONE target — scroll container OR body, never both.
+        // Padding both doubles the empty space (e.g. gradebook + body = ~980px gap).
         if (scrollParent) {
+          // Element is inside a scroll container — pad it so the last row can
+          // scroll upward. Body padding is not needed and would double the space.
           if (!scrollParentIsPaddedRef.current) {
             paddedNodeRef.current = scrollParent
             paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
             scrollParentIsPaddedRef.current = true
           }
           scrollParent.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
+        } else {
+          // No scroll container (Login, AccountSettings, subject edit, etc.) —
+          // pad body so window.scrollBy can push content above the keyboard.
+          if (!bodyIsPaddedRef.current) {
+            bodyPadRestoreRef.current = document.body.style.paddingBottom
+            bodyIsPaddedRef.current = true
+          }
+          document.body.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
         }
 
-        // Scroll after layout recalculates with new padding.
-        // Sweet spot: target element bottom at 60% of available height —
-        // leaves 40% breathing room between element and keyboard top.
-        // Applies to every field on every page universally.
+        // Only scroll when the field is actually blocked by the keyboard.
+        // If it's already visible above the keyboard, leave it in place —
+        // scrolling it to a "sweet spot" when it doesn't need it pushes
+        // top cells out of view and middle cells up unnecessarily.
         requestAnimationFrame(() => {
           const elRect = el.getBoundingClientRect()
-          const availH = window.innerHeight - KBD_HEIGHT
-          const sweetBottom = availH * 0.60
-          if (elRect.bottom > sweetBottom) {
+          const keyboardTop = window.innerHeight - KBD_HEIGHT
+          if (elRect.bottom > keyboardTop) {
+            // Field is blocked — scroll to the sweet spot (60% of available height)
+            // so there's comfortable breathing room between the field and the keyboard.
+            const sweetBottom = keyboardTop * 0.60
             const delta = elRect.bottom - sweetBottom
             if (scrollParent) scrollParent.scrollBy({ top: delta, behavior: 'smooth' })
             window.scrollBy({ top: delta, behavior: 'smooth' })
