@@ -16,9 +16,11 @@ function applyValue(el, newValue) {
 export function OSKProvider({ children }) {
   const [visible, setVisible] = useState(false)
   const [keyboardType, setKeyboardType] = useState('qwerty')
-  const activeElRef = useRef(null)
-  const paddedNodeRef = useRef(null)   // track which scroll container we padded
-  const hideTimeoutRef = useRef(null)  // track pending hideOSK cleanup timer
+  const activeElRef          = useRef(null)
+  const paddedNodeRef        = useRef(null)  // scroll container that was padded
+  const paddedNodeRestoreRef = useRef('')    // its original paddingBottom (in ref, not on DOM node)
+  const bodyPadRestoreRef    = useRef('')    // document.body's original paddingBottom
+  const hideTimeoutRef       = useRef(null)  // pending hideOSK cleanup timer
 
   function findScrollParent(el) {
     let node = el.parentElement
@@ -41,7 +43,7 @@ export function OSKProvider({ children }) {
     setKeyboardType(type)
     setVisible(true)
     // After the 300ms slide-up transition, push content up so the active element
-    // is visible above the keyboard — even when it's the very last row
+    // is visible above the keyboard — works on every page including Login
     setTimeout(() => {
       try {
         const KBD_HEIGHT = type === 'numeric' ? 258 : 232
@@ -49,15 +51,21 @@ export function OSKProvider({ children }) {
 
         const scrollParent = findScrollParent(el)
 
-        // Step 1: Pad the scroll container so the last row CAN scroll upward.
-        // Without extra padding, scrollBy() does nothing when already at the bottom.
+        // Always pad document.body — makes the page scrollable even when there
+        // is no inner scroll container (e.g. Login, AccountSettings)
+        bodyPadRestoreRef.current = document.body.style.paddingBottom
+        document.body.style.paddingBottom = (KBD_HEIGHT + CLEARANCE) + 'px'
+
+        // Also pad the nearest scroll container (e.g. gradebook table)
+        // Store restore value in a ref, NOT on the DOM node, so it survives
+        // React re-renders that replace the DOM element
         if (scrollParent) {
           paddedNodeRef.current = scrollParent
-          scrollParent._oskPadRestore = scrollParent.style.paddingBottom
+          paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
           scrollParent.style.paddingBottom = (KBD_HEIGHT + CLEARANCE) + 'px'
         }
 
-        // Step 2: After layout recalculates with the new padding, scroll the element clear.
+        // Scroll after layout recalculates with new padding
         requestAnimationFrame(() => {
           const elRect = el.getBoundingClientRect()
           const safeBottom = window.innerHeight - KBD_HEIGHT - CLEARANCE
@@ -73,14 +81,14 @@ export function OSKProvider({ children }) {
 
   const hideOSK = useCallback(() => {
     setVisible(false)
-    // Restore padding and clear refs after the slide-down animation
+    // Restore all padding and clear refs after the slide-down animation
     hideTimeoutRef.current = setTimeout(() => {
       try {
+        // Restore scroll container padding (value stored in ref, not on DOM node,
+        // so this survives React re-renders that replace the DOM element)
         const node = paddedNodeRef.current
-        if (node && node._oskPadRestore !== undefined) {
-          node.style.paddingBottom = node._oskPadRestore
-          delete node._oskPadRestore
-          // Clamp scrollTop so removed padding doesn't leave empty space
+        if (node) {
+          node.style.paddingBottom = paddedNodeRestoreRef.current
           requestAnimationFrame(() => {
             try {
               const max = Math.max(0, node.scrollHeight - node.clientHeight)
@@ -89,6 +97,17 @@ export function OSKProvider({ children }) {
           })
         }
         paddedNodeRef.current = null
+        paddedNodeRestoreRef.current = ''
+
+        // Restore document.body padding and clamp window scroll
+        document.body.style.paddingBottom = bodyPadRestoreRef.current
+        bodyPadRestoreRef.current = ''
+        requestAnimationFrame(() => {
+          try {
+            const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+            if (window.scrollY > max) window.scrollTo({ top: max })
+          } catch (_) {}
+        })
       } catch (_) {}
       activeElRef.current = null
       hideTimeoutRef.current = null
