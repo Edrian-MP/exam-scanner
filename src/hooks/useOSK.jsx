@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 const OSKContext = createContext(null)
 
@@ -94,6 +94,26 @@ export function OSKProvider({ children }) {
       hideTimeoutRef.current = null
     }, 350)
   }, [])
+
+  // Global listener — triggers OSK for ANY input/textarea on ANY page,
+  // so LoginPage, AccountSettingsPage, and raw <input> elements need no changes.
+  const OSK_SKIP_TYPES = new Set([
+    'file', 'datetime-local', 'checkbox', 'radio',
+    'range', 'color', 'submit', 'reset', 'button', 'image', 'hidden',
+  ])
+  useEffect(() => {
+    function handleGlobalFocus(e) {
+      const el = e.target
+      if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return
+      if (el.readOnly || el.disabled) return
+      if (OSK_SKIP_TYPES.has(el.type)) return
+      const isNumeric =
+        el.type === 'number' || el.inputMode === 'numeric' || el.inputMode === 'decimal'
+      showOSK(el, isNumeric ? 'numeric' : 'qwerty')
+    }
+    document.addEventListener('focusin', handleGlobalFocus)
+    return () => document.removeEventListener('focusin', handleGlobalFocus)
+  }, [showOSK])
 
   const pressKey = useCallback((char) => {
     const el = activeElRef.current

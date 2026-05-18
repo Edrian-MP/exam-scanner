@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useOSKContext } from './hooks/useOSK'
 
 /* ── Key layout constants ──────────────────────────────────────── */
+const QWERTY_NUM_ROW = ['1','2','3','4','5','6','7','8','9','0']
 const QWERTY_ROW0 = ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P']
 const QWERTY_ROW1 = ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L']
 const QWERTY_ROW2 = ['Z', 'X', 'C', 'V', 'B', 'N', 'M']
@@ -50,6 +51,15 @@ function QwertyKeyboard({ onKey, onBackspace, onEnter, onDone }) {
 
   return (
     <div className="flex flex-col gap-1.5 w-full max-w-4xl mx-auto">
+      {/* Number row: 1–0 (not affected by Shift) */}
+      <div className="flex gap-1">
+        {QWERTY_NUM_ROW.map((k) => (
+          <button key={k} type="button" className={LETTER_KEY}
+            onPointerDown={(e) => { e.preventDefault(); onKey(k) }}>
+            {k}
+          </button>
+        ))}
+      </div>
       {/* Row 0: Q–P + backspace */}
       <div className="flex gap-1">
         {QWERTY_ROW0.map((k) => (
