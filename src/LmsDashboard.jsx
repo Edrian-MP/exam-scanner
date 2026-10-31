@@ -215,150 +215,253 @@ function safeFilenamePart(value = '', fallback = 'subject') {
   return cleaned || fallback
 }
 
-function getActivityTotal(activity = {}) {
-  const totalItems = Number(activity.total_items || 0)
-  if (totalItems > 0) return totalItems
-  const maxScore = Number(activity.max_score || 0)
-  return maxScore > 0 ? maxScore : ''
+/* ─── exam results & item analysis ──────────────────── */
+function round2(v) {
+  return Math.round(Number(v) * 100) / 100
 }
 
-function findGradebookActivityDetail(row, activity) {
-  const details = Array.isArray(row.published_details) ? row.published_details : []
-  return details.find((detail) => String(detail.activity_id) === String(activity.activity_id)) || null
+function hasScore(row) {
+  return row.score !== null && row.score !== undefined
 }
 
-function formatSummaryActivityScore(detail) {
-  if (!detail) return 0
-  if (detail.status === 'checked') {
-    return Number(detail.score ?? 0)
+function scorePercent(score, total) {
+  return total > 0 ? round2((Number(score) / total) * 100) : null
+}
+
+function formatSubmittedAt(value) {
+  if (!value) return ''
+  const d = new Date(String(value).replace(' ', 'T'))
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString()
+}
+
+function describeScores(exam) {
+  const scores = (exam?.results || []).filter(hasScore).map((r) => Number(r.score))
+  if (!scores.length) return null
+  const mean = scores.reduce((s, v) => s + v, 0) / scores.length
+  const sd = Math.sqrt(scores.reduce((s, v) => s + (v - mean) ** 2, 0) / scores.length)
+  return {
+    count: scores.length,
+    mean: round2(mean),
+    sd: round2(sd),
+    highest: Math.max(...scores),
+    lowest: Math.min(...scores),
   }
-  return 0
 }
 
-function createExportWorksheet(rows, subject) {
-  const worksheet = XLSX.utils.aoa_to_sheet([
-    ['Section', subject?.term_label || '', 'Course Title', subject?.title || ''],
-    ['Course Code', subject?.subject_code || '', '', ''],
-    [],
-  ])
-  XLSX.utils.sheet_add_json(worksheet, rows, { origin: 'A4' })
-  worksheet['!cols'] = [
-    { wch: 16 },
-    { wch: 24 },
-    { wch: 16 },
-    { wch: 28 },
-    { wch: 22 },
-    { wch: 14 },
-    { wch: 20 },
-    { wch: 16 },
-  ]
-  return worksheet
+// Difficulty index p = proportion of takers who answered correctly
+function difficultyLabel(p) {
+  if (p === null) return '—'
+  if (p <= 0.20) return 'Very Difficult'
+  if (p <= 0.40) return 'Difficult'
+  if (p <= 0.60) return 'Average'
+  if (p <= 0.80) return 'Easy'
+  return 'Very Easy'
 }
 
-function exportGradebookWorkbook({ gradebook, publishedActivities, gradeWeights = {}, subject }) {
-  if (!Array.isArray(gradebook) || gradebook.length === 0) return
+// Discrimination index D = (upper 27% correct − lower 27% correct) / group size
+function discriminationLabel(d) {
+  if (d === null) return '—'
+  if (d < 0) return 'Negative'
+  if (d < 0.20) return 'Poor'
+  if (d < 0.30) return 'Fair'
+  if (d < 0.40) return 'Good'
+  return 'Very Good'
+}
 
-  const activities = Array.isArray(publishedActivities) ? publishedActivities : []
-  const wwActs = activities.filter((a) => a.activity_type === 'quiz')
-  const ptActs = activities.filter((a) => a.activity_type === 'activity')
-  const qaActs = activities.filter((a) => a.activity_type === 'exam')
+function itemDecision(p, d) {
+  if (p === null || d === null) return '—'
+  if (d < 0) return 'Reject'
+  const goodP = p > 0.20 && p <= 0.80
+  const goodD = d >= 0.20
+  if (goodP && goodD) return 'Retain'
+  if (goodP || goodD) return 'Revise'
+  return 'Reject'
+}
 
-  const wwW = Number(gradeWeights.written_work || 0)
-  const ptW = Number(gradeWeights.performance_task || 0)
-  const qaW = Number(gradeWeights.quarterly_assessment || 0)
+function computeItemAnalysis(exam) {
+  const key = Array.isArray(exam?.answer_key) ? exam.answer_key : []
+  const total = Number(exam?.total_items || key.length)
+  const takers = (exam?.results || []).filter((r) => hasScore(r) && Array.isArray(r.answers))
+  const n = takers.length
+  const groupSize = n >= 2 ? Math.max(1, Math.round(n * 0.27)) : 0
+  const ranked = [...takers].sort((a, b) => Number(b.score) - Number(a.score))
+  const upper = ranked.slice(0, groupSize)
+  const lower = groupSize ? ranked.slice(-groupSize) : []
 
-  // ── Build data rows ───────────────────────────────────────────────
-  const dataRows = gradebook.map((row) => {
-    const details = Array.isArray(row.published_details) ? row.published_details : []
-    const findDetail = (aid) => details.find((d) => String(d.activity_id) === String(aid))
+  const letters = new Set(['A', 'B', 'C', 'D'])
+  key.forEach((k) => { if (k) letters.add(k) })
+  takers.forEach((r) => r.answers.forEach((a) => { if (a) letters.add(a) }))
+  const options = [...letters].sort()
 
-    const r = {
-      'Student Code': row.student_code || '',
-      'Surname': row.surname || '',
-      'Given Name': row.given_name || '',
-    }
-
-    wwActs.forEach((act, i) => {
-      const d = findDetail(act.activity_id)
-      r[`WW${i + 1} (/${act.max_score})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
+  const items = Array.from({ length: total }, (_, i) => {
+    const k = key[i] || ''
+    const isCorrect = (r) => Boolean(k) && (r.answers[i] || '') === k
+    const counts = Object.fromEntries(options.map((o) => [o, 0]))
+    let blank = 0
+    takers.forEach((r) => {
+      const a = r.answers[i] || ''
+      if (a) counts[a] += 1
+      else blank += 1
     })
-    if (wwActs.length > 0) {
-      r[`WW Score (%)`] = row.ww_component_pct !== null && row.ww_component_pct !== undefined ? Number(row.ww_component_pct) : ''
-      r[`WW Contribution (${wwW}%)`] = row.ww_component_pct !== null ? Math.round(Number(row.ww_component_pct) * (wwW / 100) * 100) / 100 : ''
+    const correct = takers.filter(isCorrect).length
+    const upperCorrect = upper.filter(isCorrect).length
+    const lowerCorrect = lower.filter(isCorrect).length
+    const p = n ? round2(correct / n) : null
+    const d = groupSize ? round2((upperCorrect - lowerCorrect) / groupSize) : null
+    return {
+      item: i + 1,
+      key: k,
+      correct,
+      p,
+      difficulty: difficultyLabel(p),
+      upperCorrect,
+      lowerCorrect,
+      d,
+      discrimination: discriminationLabel(d),
+      decision: itemDecision(p, d),
+      counts,
+      blank,
     }
-
-    ptActs.forEach((act, i) => {
-      const d = findDetail(act.activity_id)
-      r[`PT${i + 1} (/${act.max_score})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
-    })
-    if (ptActs.length > 0) {
-      r[`PT Score (%)`] = row.pt_component_pct !== null && row.pt_component_pct !== undefined ? Number(row.pt_component_pct) : ''
-      r[`PT Contribution (${ptW}%)`] = row.pt_component_pct !== null ? Math.round(Number(row.pt_component_pct) * (ptW / 100) * 100) / 100 : ''
-    }
-
-    qaActs.forEach((act, i) => {
-      const d = findDetail(act.activity_id)
-      const total = act.total_items ?? act.max_score
-      r[`QA${i + 1} (/${total})`] = d?.score !== null && d?.score !== undefined ? Number(d.score) : ''
-    })
-    if (qaActs.length > 0) {
-      r[`QA Score (%)`] = row.qa_component_pct !== null && row.qa_component_pct !== undefined ? Number(row.qa_component_pct) : ''
-      r[`QA Contribution (${qaW}%)`] = row.qa_component_pct !== null ? Math.round(Number(row.qa_component_pct) * (qaW / 100) * 100) / 100 : ''
-    }
-
-    r['Final Grade (%)'] = row.final_grade !== null && row.final_grade !== undefined ? Number(row.final_grade) : ''
-    return r
   })
 
-  // ── Class average row ─────────────────────────────────────────────
-  if (dataRows.length > 0) {
-    const numKeys = Object.keys(dataRows[0]).filter((k) => !['Student Code', 'Surname', 'Given Name'].includes(k))
-    const avg = {}
-    avg['Student Code'] = ''
-    avg['Surname'] = 'CLASS AVERAGE'
-    avg['Given Name'] = ''
-    numKeys.forEach((k) => {
-      const vals = dataRows.map((r) => r[k]).filter((v) => v !== '' && v !== null && v !== undefined && !Number.isNaN(Number(v)))
-      avg[k] = vals.length > 0 ? Math.round((vals.reduce((s, v) => s + Number(v), 0) / vals.length) * 100) / 100 : ''
-    })
-    dataRows.push(avg)
-  }
+  return { n, groupSize, options, items }
+}
+
+function examSheetHeader(exam, subject, extra = []) {
+  return [
+    ['Subject', [subject?.subject_code, subject?.title].filter(Boolean).join(' — ')],
+    ['Section / Term', subject?.term_label || ''],
+    ['Exam', exam?.title || ''],
+    ['Total Items', Number(exam?.total_items || 0)],
+    ...extra,
+    ['Exported', new Date().toLocaleString()],
+    [],
+  ]
+}
+
+function examExportFilename(kind, exam, subject) {
+  const subjectPart = safeFilenamePart(subject?.subject_code || subject?.title, 'subject')
+  const examPart = safeFilenamePart(exam?.title, 'exam')
+  return `${kind}-${subjectPart}-${examPart}-${new Date().toISOString().slice(0, 10)}.xlsx`
+}
+
+function exportExamResultsWorkbook(exam, subject) {
+  if (!exam) return
+  const total = Number(exam.total_items || 0)
+  const rows = exam.results || []
+  const stats = describeScores(exam)
+
+  const resultRows = rows.map((r, i) => [
+    i + 1,
+    r.student_code || '',
+    r.surname || '',
+    r.given_name || '',
+    r.middle_name || '',
+    hasScore(r) ? Number(r.score) : '',
+    total,
+    hasScore(r) ? scorePercent(r.score, total) : '',
+    hasScore(r) ? 'Taken' : 'Not taken',
+    formatSubmittedAt(r.submitted_at),
+  ])
+  const summary = stats
+    ? [
+        [],
+        ['Examinees', stats.count],
+        ['Mean Score', stats.mean],
+        ['Mean (%)', scorePercent(stats.mean, total)],
+        ['Standard Deviation', stats.sd],
+        ['Highest Score', stats.highest],
+        ['Lowest Score', stats.lowest],
+      ]
+    : [[], ['No scanned results yet.']]
+
+  const resultsSheet = XLSX.utils.aoa_to_sheet([
+    ...examSheetHeader(exam, subject),
+    ['No.', 'Student Code', 'Surname', 'Given Name', 'Middle Name', 'Score', 'Total Items', 'Percentage (%)', 'Status', 'Submitted At'],
+    ...resultRows,
+    ...summary,
+  ])
+  resultsSheet['!cols'] = [6, 14, 18, 20, 16, 8, 11, 14, 11, 22].map((wch) => ({ wch }))
+
+  const itemHeaders = Array.from({ length: total }, (_, i) => `Item ${i + 1}`)
+  const responsesSheet = XLSX.utils.aoa_to_sheet([
+    ['Student Code', 'Name', 'Score', ...itemHeaders],
+    ['ANSWER KEY', '', total, ...(exam.answer_key || [])],
+    ...rows.filter(hasScore).map((r) => [
+      r.student_code || '',
+      formatStudentFullName(r.given_name, r.middle_name, r.surname),
+      Number(r.score),
+      ...(r.answers || []).map((a) => a || '—'),
+    ]),
+  ])
+  responsesSheet['!cols'] = [{ wch: 14 }, { wch: 28 }, { wch: 7 }, ...itemHeaders.map(() => ({ wch: 7 }))]
 
   const workbook = XLSX.utils.book_new()
-  const summarySheet = XLSX.utils.json_to_sheet(dataRows)
+  XLSX.utils.book_append_sheet(workbook, resultsSheet, 'Exam Results')
+  XLSX.utils.book_append_sheet(workbook, responsesSheet, 'Student Responses')
+  XLSX.writeFile(workbook, examExportFilename('exam-results', exam, subject))
+}
 
-  // Column widths
-  const wscols = Object.keys(dataRows[0] || {}).map((k) => ({ wch: k.length < 12 ? 12 : k.length + 2 }))
-  summarySheet['!cols'] = wscols
+function exportItemAnalysisWorkbook(exam, subject) {
+  if (!exam) return
+  const analysis = computeItemAnalysis(exam)
+  const optionHeaders = [...analysis.options, 'Blank']
 
-  XLSX.utils.book_append_sheet(workbook, summarySheet, 'Gradebook Summary')
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ...examSheetHeader(exam, subject, [
+      ['Examinees', analysis.n],
+      ['Upper / Lower Group Size (27%)', analysis.groupSize],
+    ]),
+    [
+      'Item', 'Key', 'No. Correct', 'Difficulty Index (p)', 'Difficulty',
+      'Upper Group Correct', 'Lower Group Correct', 'Discrimination Index (D)', 'Discrimination', 'Decision',
+      ...optionHeaders,
+    ],
+    ...analysis.items.map((it) => [
+      it.item,
+      it.key,
+      it.correct,
+      it.p ?? '',
+      it.difficulty,
+      it.upperCorrect,
+      it.lowerCorrect,
+      it.d ?? '',
+      it.discrimination,
+      it.decision,
+      ...analysis.options.map((o) => it.counts[o] || 0),
+      it.blank,
+    ]),
+  ])
+  sheet['!cols'] = [6, 6, 11, 18, 14, 18, 18, 22, 14, 10, ...optionHeaders.map(() => 7)].map((wch) => ({ wch }))
 
-  // ── Activity Details sheet ────────────────────────────────────────
-  const detailRows = gradebook.flatMap((row) => {
-    const fullName = formatStudentFullName(row.given_name, row.middle_name, row.surname)
-    const details = Array.isArray(row.published_details) ? row.published_details : []
-    return activities.map((activity, index) => {
-      const detail = details.find((d) => String(d.activity_id) === String(activity.activity_id)) || {}
-      const total = getActivityTotal(detail) || getActivityTotal(activity)
-      return {
-        'Student Code': row.student_code || '',
-        'Full Name': fullName,
-        'Component': ACTIVITY_TYPE_LABELS[activity.activity_type] ?? activity.activity_type,
-        'No.': index + 1,
-        'Activity Title': activity.title || '',
-        'Quarter': activity.grading_period || '',
-        'Status': detail.status || 'posted',
-        'Score': detail.score !== null && detail.score !== undefined ? Number(detail.score) : '',
-        'Max Score': total || '',
-      }
-    })
-  })
-  const detailsSheet = createExportWorksheet(detailRows.length ? detailRows : [{ Note: 'No published activities.' }], subject)
-  XLSX.utils.book_append_sheet(workbook, detailsSheet, 'Activity Details')
+  const legend = XLSX.utils.aoa_to_sheet([
+    ['Difficulty Index (p)', 'Interpretation'],
+    ['0.00 – 0.20', 'Very Difficult'],
+    ['0.21 – 0.40', 'Difficult'],
+    ['0.41 – 0.60', 'Average'],
+    ['0.61 – 0.80', 'Easy'],
+    ['0.81 – 1.00', 'Very Easy'],
+    [],
+    ['Discrimination Index (D)', 'Interpretation'],
+    ['0.40 and above', 'Very Good'],
+    ['0.30 – 0.39', 'Good'],
+    ['0.20 – 0.29', 'Fair'],
+    ['0.00 – 0.19', 'Poor'],
+    ['Below 0', 'Negative'],
+    [],
+    ['Decision', 'Rule'],
+    ['Retain', 'Difficulty between 0.21 and 0.80 and Discrimination 0.20 or higher'],
+    ['Revise', 'Only one of the two conditions above is met'],
+    ['Reject', 'Neither condition is met, or Discrimination is negative'],
+    [],
+    ['p = No. Correct ÷ Examinees.  D = (Upper Correct − Lower Correct) ÷ Group Size, using the top and bottom 27% of examinees by score.'],
+  ])
+  legend['!cols'] = [{ wch: 26 }, { wch: 70 }]
 
-  const subjectCode = safeFilenamePart(subject?.subject_code || subject?.title, 'subject')
-  const exportedAt = new Date().toISOString().slice(0, 10)
-  XLSX.writeFile(workbook, `gradebook-${subjectCode}-${exportedAt}.xlsx`)
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Item Analysis')
+  XLSX.utils.book_append_sheet(workbook, legend, 'Legend')
+  XLSX.writeFile(workbook, examExportFilename('item-analysis', exam, subject))
 }
 
 function relativeTime(dateStr) {
@@ -433,8 +536,8 @@ const TAB_META = {
     icon: <ScanIcon />,
     accent: { dot: 'bg-slate-700', text: 'text-slate-700', bg: 'bg-slate-50', btn: 'bg-slate-800 hover:bg-slate-700', badge: 'bg-slate-200 text-slate-700' },
   },
-  gradebook: {
-    label: 'Gradebook',
+  results: {
+    label: 'Exam Results',
     icon: <GradebookIcon />,
     accent: { dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50', btn: 'bg-emerald-600 hover:bg-emerald-700', badge: 'bg-emerald-100 text-emerald-700' },
   },
@@ -1795,7 +1898,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
           </span>
           <div>
             <h3 className="text-sm font-bold text-slate-800">Review &amp; Commit</h3>
-            <p className="text-xs text-slate-500">Approve, fix, or discard scanned sheets before committing to gradebook.</p>
+            <p className="text-xs text-slate-500">Approve, fix, or discard scanned sheets before committing results.</p>
           </div>
         </div>
         <ScanReview
@@ -1877,7 +1980,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
           <form onSubmit={scan.onGrade} className="space-y-3">
             {manualContext?.activityTitle && manualContext?.studentCode && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
-                Prefilled from gradebook: {manualContext.activityTitle} ({manualContext.studentCode})
+                Prefilled from exam results: {manualContext.activityTitle} ({manualContext.studentCode})
               </div>
             )}
 
@@ -1974,521 +2077,295 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   )
 }
 
-function GradebookTab({
-  gradebook,
-  atRiskStudents,
-  publishedActivities = [],
-  gradeWeights = {},
-  selectedQuarter = 'all',
-  selectedSubject = null,
-  onOpenPendingActivity = () => {},
-  onSaveGradeWeights = () => {},
-  onSaveScore = () => {},
-  onQuarterChange = () => {},
-}) {
-  const [searchQuery, setSearchQuery]         = useState('')
-  const [sortKey, setSortKey]                 = useState('name')
-  const [showWeightsPanel, setShowWeightsPanel] = useState(false)
-  const [localWeights, setLocalWeights]       = useState({ written_work: 0, performance_task: 0, quarterly_assessment: 0 })
-  const [savingWeights, setSavingWeights]     = useState(false)
-  const [editingCell, setEditingCell]         = useState(null)
-  const [cellDraft, setCellDraft]             = useState('')
-  const [savingCell, setSavingCell]           = useState(null)
-  const { onFocus: oskFocus }                 = useOSK()
+const DIFFICULTY_STYLES = {
+  'Very Difficult': 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/25 dark:text-rose-300 dark:ring-rose-700/70',
+  'Difficult':      'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-700/70',
+  'Average':        'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-700/70',
+  'Easy':           'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-900/25 dark:text-sky-300 dark:ring-sky-700/70',
+  'Very Easy':      'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-900/25 dark:text-violet-300 dark:ring-violet-700/70',
+}
+const DISCRIMINATION_STYLES = {
+  'Very Good': 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-700/70',
+  'Good':      'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-900/25 dark:text-sky-300 dark:ring-sky-700/70',
+  'Fair':      'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-700/70',
+  'Poor':      'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/25 dark:text-rose-300 dark:ring-rose-700/70',
+  'Negative':  'bg-rose-100 text-rose-800 ring-1 ring-rose-300 dark:bg-rose-900/40 dark:text-rose-200 dark:ring-rose-600',
+}
+const DECISION_STYLES = {
+  Retain: 'bg-emerald-600 text-white',
+  Revise: 'bg-amber-500 text-white',
+  Reject: 'bg-rose-600 text-white',
+}
+const NEUTRAL_CHIP = 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500'
 
-  // sync localWeights when parent gradeWeights changes
-  const prevWeightsRef = useRef(null)
-  if (prevWeightsRef.current !== gradeWeights) {
-    prevWeightsRef.current = gradeWeights
-    // only sync if panel isn't open (avoid clobbering user edits)
-    if (!showWeightsPanel) {
-      // eslint-disable-next-line no-unused-expressions
-      localWeights.written_work === 0 && localWeights.performance_task === 0 && localWeights.quarterly_assessment === 0
-        ? setLocalWeights({ ...gradeWeights })
-        : null
-    }
-  }
+function ExamResultsTab({ exams = [], selectedSubject = null, canScan = false, onScanStudent = () => {} }) {
+  const [examId, setExamId]           = useState('')
+  const [view, setView]               = useState('results')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortKey, setSortKey]         = useState('name')
+  const [showMissing, setShowMissing] = useState(true)
+  const { onFocus: oskFocus }         = useOSK()
 
-  // on open, always sync
-  function openWeightsPanel() {
-    setLocalWeights({ ...gradeWeights })
-    setShowWeightsPanel(true)
-  }
+  const exam = useMemo(
+    () => exams.find((e) => String(e.activity_id) === String(examId)) || exams[0] || null,
+    [exams, examId]
+  )
+  const total    = Number(exam?.total_items || 0)
+  const stats    = useMemo(() => describeScores(exam), [exam])
+  const analysis = useMemo(() => computeItemAnalysis(exam), [exam])
+  const decisionCounts = useMemo(() => analysis.items.reduce((acc, it) => {
+    acc[it.decision] = (acc[it.decision] || 0) + 1
+    return acc
+  }, {}), [analysis])
 
-  const wwActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'quiz'), [publishedActivities])
-  const ptActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'activity'), [publishedActivities])
-  const qaActivities = useMemo(() => publishedActivities.filter((a) => a.activity_type === 'exam'), [publishedActivities])
-
-  const filteredRows = useMemo(() => {
+  const rows = useMemo(() => {
     const q = searchQuery.toLowerCase()
-    let rows = gradebook.filter((r) => {
+    let list = (exam?.results || []).filter((r) => {
+      if (!showMissing && !hasScore(r)) return false
       if (!q) return true
       const name = formatStudentFullName(r.given_name, r.middle_name, r.surname).toLowerCase()
       return name.includes(q) || String(r.student_code || '').toLowerCase().includes(q)
     })
-    if (sortKey === 'name') rows = [...rows].sort((a, b) => a.surname.localeCompare(b.surname))
-    else if (sortKey === 'avg_asc') rows = [...rows].sort((a, b) => (a.final_grade ?? -1) - (b.final_grade ?? -1))
-    else if (sortKey === 'avg_desc') rows = [...rows].sort((a, b) => (b.final_grade ?? -1) - (a.final_grade ?? -1))
-    return rows
-  }, [gradebook, searchQuery, sortKey])
+    const scoreOf = (r) => (hasScore(r) ? Number(r.score) : -1)
+    if (sortKey === 'score_desc') list = [...list].sort((a, b) => scoreOf(b) - scoreOf(a))
+    else if (sortKey === 'score_asc') list = [...list].sort((a, b) => scoreOf(a) - scoreOf(b))
+    return list
+  }, [exam, searchQuery, sortKey, showMissing])
 
-  // Fallback grade when weights are 0%: simple average of non-null component percentages
-  function provisionalGrade(row) {
-    const vals = [row.ww_component_pct, row.pt_component_pct, row.qa_component_pct]
-      .filter((v) => v !== null && v !== undefined)
-    if (vals.length === 0) return null
-    return Math.round((vals.reduce((s, v) => s + Number(v), 0) / vals.length) * 100) / 100
+  if (!exams.length) {
+    return (
+      <div className="min-h-[520px] p-4">
+        <EmptyState
+          icon={<GradebookIcon size="lg" />}
+          title="No exams yet"
+          description="Create an Exam activity linked to an answer key, then scan answer sheets to see results here."
+        />
+      </div>
+    )
   }
 
-  function getStudentScore(row, activity) {
-    const details = Array.isArray(row.published_details) ? row.published_details : []
-    return details.find((d) => String(d.activity_id) === String(activity.activity_id))
-  }
-
-  async function commitCell(activityId, studentId) {
-    const val = cellDraft === '' ? null : parseFloat(cellDraft)
-    setSavingCell({ activityId, studentId })
-    setEditingCell(null)
-    await onSaveScore(activityId, studentId, Number.isFinite(val) ? val : null)
-    setSavingCell(null)
-  }
-
-  async function handleSaveWeights() {
-    setSavingWeights(true)
-    await onSaveGradeWeights({ ...localWeights })
-    setSavingWeights(false)
-    setShowWeightsPanel(false)
-  }
-
-  const weightTotal = (Number(localWeights.written_work) || 0)
-    + (Number(localWeights.performance_task) || 0)
-    + (Number(localWeights.quarterly_assessment) || 0)
-
-  // column count for colSpan calculations
-  // Student(1) + WW cols + WW score + PT cols + PT score + QA cols + QA score + Final(1)
-  const totalCols = 1 + wwActivities.length + (wwActivities.length > 0 ? 1 : 0)
-    + ptActivities.length + (ptActivities.length > 0 ? 1 : 0)
-    + qaActivities.length + (qaActivities.length > 0 ? 1 : 0)
-    + 1
+  const controlClass = 'h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-600 shadow-sm outline-none focus:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+  const exportClass  = 'inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-700/70 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-900/25'
 
   return (
     <div className="min-h-[520px] p-4">
-      {/* ── Top controls ─────────────────────────────────────── */}
+      {/* ── Exam picker + view switch + export ─────────────────── */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[160px]">
-          <svg className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M9 3a6 6 0 100 12A6 6 0 009 3zM2 9a7 7 0 1112.452 4.391l3.328 3.329a1 1 0 11-1.414 1.414l-3.33-3.328A7 7 0 012 9z" clipRule="evenodd" />
-          </svg>
-          <input
-            type="text"
-            value={searchQuery}
-            onFocus={oskFocus}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search students…"
-            className="h-8 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 shadow-sm outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-          />
-        </div>
+        <select
+          value={exam ? String(exam.activity_id) : ''}
+          onChange={(e) => setExamId(e.target.value)}
+          className={`${controlClass} min-w-[200px] max-w-full font-semibold text-slate-700`}
+          aria-label="Exam"
+        >
+          {exams.map((e) => (
+            <option key={e.activity_id} value={String(e.activity_id)}>
+              {e.title} ({e.total_items} items){e.publish_status !== 'published' ? ` — ${e.publish_status}` : ''}
+            </option>
+          ))}
+        </select>
 
-        {/* Quarter filter */}
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-1 py-1 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-          {['all', ...GRADING_PERIODS].map((q) => (
+          {[['results', 'Results'], ['items', 'Item Analysis']].map(([key, label]) => (
             <button
-              key={q}
+              key={key}
               type="button"
-              onClick={() => onQuarterChange(q)}
+              onClick={() => setView(key)}
               className={`rounded-md px-2.5 py-0.5 text-[11px] font-semibold transition ${
-                selectedQuarter === q
+                view === key
                   ? 'bg-emerald-500 text-white shadow-sm'
                   : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
               }`}
             >
-              {q === 'all' ? 'All' : q}
+              {label}
             </button>
           ))}
         </div>
 
-        {/* Sort */}
-        <select
-          value={sortKey}
-          onChange={(e) => setSortKey(e.target.value)}
-          className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-600 shadow-sm outline-none focus:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-        >
-          <option value="name">Sort: Name A–Z</option>
-          <option value="avg_desc">Sort: Grade ↓</option>
-          <option value="avg_asc">Sort: Grade ↑</option>
-        </select>
-
-        {/* Grade weights toggle */}
         <button
           type="button"
-          onClick={() => showWeightsPanel ? setShowWeightsPanel(false) : openWeightsPanel()}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+          disabled={!exam}
+          onClick={() => (view === 'items' ? exportItemAnalysisWorkbook(exam, selectedSubject) : exportExamResultsWorkbook(exam, selectedSubject))}
+          className={`${exportClass} ml-auto`}
+          title={view === 'items' ? 'Export item analysis to Excel' : 'Export exam results to Excel'}
         >
-          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
-          Weights
+          <DocIcon />
+          {view === 'items' ? 'Export Item Analysis' : 'Export Results'}
         </button>
-
-        {/* Summary pills */}
-        {gradebook.length > 0 && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-900/25 dark:text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              {gradebook.length} students
-            </span>
-            {atRiskStudents.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 dark:border-rose-700/70 dark:bg-rose-900/25 dark:text-rose-300">
-                <RiskIcon />
-                {atRiskStudents.length} at-risk
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => exportGradebookWorkbook({ gradebook, publishedActivities, gradeWeights, subject: selectedSubject })}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-700/70 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-900/25"
-              title="Export gradebook to Excel"
-            >
-              <DocIcon />
-              Export
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* ── Grade Weights Panel ───────────────────────────────── */}
-      {showWeightsPanel && (
-        <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-widest text-slate-400">Grade Weights (must total 100%)</p>
-          <div className="flex flex-wrap items-end gap-4">
-            {[
-              { key: 'written_work', label: 'Written Work' },
-              { key: 'performance_task', label: 'Performance Task' },
-              { key: 'quarterly_assessment', label: 'Quarterly Assessment' },
-            ].map(({ key, label }) => (
-              <label key={key} className="flex flex-col gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                {label}
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={localWeights[key] ?? 0}
-                    onChange={(e) => setLocalWeights((p) => ({ ...p, [key]: parseFloat(e.target.value) || 0 }))}
-                    className="w-16 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-center text-sm font-bold text-slate-700 outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                  />
-                  <span className="text-slate-400">%</span>
-                </div>
-              </label>
-            ))}
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-slate-500">Total</span>
-              <span className={`rounded-lg px-3 py-1 text-sm font-bold ${Math.abs(weightTotal - 100) < 0.01 ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'}`}>
-                {weightTotal}%
-              </span>
-            </div>
-            <button
-              type="button"
-              disabled={savingWeights}
-              onClick={handleSaveWeights}
-              className="self-end inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60"
-            >
-              {savingWeights ? <SpinIcon /> : null}
-              Save Weights
-            </button>
-            {Math.abs(weightTotal - 100) >= 0.01 && (
-              <p className="self-end text-[11px] text-rose-500">Weights must add up to 100% for correct final grade computation.</p>
-            )}
+      {/* ── Summary strip ──────────────────────────────────────── */}
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {[
+          ['Examinees', stats ? `${stats.count} / ${exam.results.length}` : `0 / ${exam?.results.length || 0}`],
+          ['Mean', stats ? `${stats.mean} (${formatPercent(scorePercent(stats.mean, total))})` : '—'],
+          ['Highest', stats ? `${stats.highest} / ${total}` : '—'],
+          ['Lowest', stats ? `${stats.lowest} / ${total}` : '—'],
+          ['Std. Dev.', stats ? stats.sd : '—'],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-xl border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-900">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
+            <p className="mt-0.5 text-sm font-bold text-slate-700 dark:text-slate-100">{value}</p>
           </div>
-        </div>
-      )}
+        ))}
+      </div>
 
-      {/* ── Table ──────────────────────────────────────────────── */}
-      {gradebook.length > 0 ? (
-        <div className="max-h-[520px] overflow-x-auto overflow-y-auto rounded-2xl border border-slate-200 bg-white/80 dark:border-slate-700/80 dark:bg-slate-900/40">
-          <table className="min-w-full text-sm">
-            {/* ── Group header row ── */}
-            <thead className="sticky top-0 z-20 bg-white/95 backdrop-blur dark:bg-slate-950/90">
-              <tr className="border-b border-slate-100 dark:border-slate-700/60">
-                {/* Student sticky col */}
-                <th
-                  rowSpan={2}
-                  className="sticky left-0 z-30 bg-white/95 py-2 pr-4 text-center text-[11px] font-bold uppercase tracking-widest text-slate-400 backdrop-blur dark:bg-slate-950/90 dark:text-slate-300"
-                  style={{ minWidth: 180 }}
-                >
-                  Student
-                </th>
-                {/* Written Work group */}
-                {wwActivities.length > 0 && (
-                  <th
-                    colSpan={wwActivities.length + 1}
-                    className="border-l border-violet-200 bg-violet-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-violet-600 dark:border-violet-700/50 dark:bg-violet-900/15 dark:text-violet-300"
-                  >
-                    Written Work ({gradeWeights.written_work ?? 0}%)
-                  </th>
-                )}
-                {/* Performance Task group */}
-                {ptActivities.length > 0 && (
-                  <th
-                    colSpan={ptActivities.length + 1}
-                    className="border-l border-teal-200 bg-teal-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-teal-600 dark:border-teal-700/50 dark:bg-teal-900/15 dark:text-teal-300"
-                  >
-                    Performance Task ({gradeWeights.performance_task ?? 0}%)
-                  </th>
-                )}
-                {/* Quarterly Assessment group */}
-                {qaActivities.length > 0 && (
-                  <th
-                    colSpan={qaActivities.length + 1}
-                    className="border-l border-blue-200 bg-blue-50/60 px-2 pb-1 pt-2 text-center text-[11px] font-bold uppercase tracking-widest text-blue-600 dark:border-blue-700/50 dark:bg-blue-900/15 dark:text-blue-300"
-                  >
-                    Quarterly Assessment ({gradeWeights.quarterly_assessment ?? 0}%)
-                  </th>
-                )}
-                {/* Final Grade */}
-                <th
-                  rowSpan={2}
-                  className="border-l border-slate-200 px-3 pb-3 text-center text-[11px] font-bold uppercase tracking-widest text-slate-500 dark:border-slate-700 dark:text-slate-300"
-                  style={{ minWidth: 80 }}
-                >
-                  Final Grade
-                </th>
-              </tr>
-              {/* ── Individual activity headers ── */}
-              <tr className="border-b border-slate-100 dark:border-slate-700/80">
-                {wwActivities.map((act, i) => (
-                  <th key={`ww-h-${act.activity_id}`} className="border-l border-violet-100 bg-violet-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-violet-700/30 dark:bg-violet-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
-                    WW{i + 1}<br /><span className="font-normal text-slate-400">/{act.max_score}</span>
-                  </th>
-                ))}
-                {wwActivities.length > 0 && (
-                  <th className="border-l border-violet-200 bg-violet-50/60 px-2 pb-2 text-center text-[10px] font-bold text-violet-600 dark:border-violet-700/50 dark:bg-violet-900/15 dark:text-violet-300" style={{ minWidth: 56 }}>Score</th>
-                )}
-                {ptActivities.map((act, i) => (
-                  <th key={`pt-h-${act.activity_id}`} className="border-l border-teal-100 bg-teal-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-teal-700/30 dark:bg-teal-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
-                    PT{i + 1}<br /><span className="font-normal text-slate-400">/{act.max_score}</span>
-                  </th>
-                ))}
-                {ptActivities.length > 0 && (
-                  <th className="border-l border-teal-200 bg-teal-50/60 px-2 pb-2 text-center text-[10px] font-bold text-teal-600 dark:border-teal-700/50 dark:bg-teal-900/15 dark:text-teal-300" style={{ minWidth: 56 }}>Score</th>
-                )}
-                {qaActivities.map((act, i) => (
-                  <th key={`qa-h-${act.activity_id}`} className="border-l border-blue-100 bg-blue-50/40 px-2 pb-2 pt-0 text-center text-[10px] font-semibold text-slate-500 dark:border-blue-700/30 dark:bg-blue-900/10 dark:text-slate-400" style={{ minWidth: 64 }}>
-                    QA{i + 1}<br /><span className="font-normal text-slate-400">/{act.total_items ?? act.max_score}</span>
-                  </th>
-                ))}
-                {qaActivities.length > 0 && (
-                  <th className="border-l border-blue-200 bg-blue-50/60 px-2 pb-2 text-center text-[10px] font-bold text-blue-600 dark:border-blue-700/50 dark:bg-blue-900/15 dark:text-blue-300" style={{ minWidth: 56 }}>Score</th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRows.length === 0 ? (
-                <tr>
-                  <td colSpan={totalCols} className="py-8 text-center text-sm text-slate-400">No students match your search.</td>
+      {view === 'results' ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={searchQuery}
+              onFocus={oskFocus}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search students…"
+              className="h-8 min-w-[160px] flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 placeholder-slate-400 shadow-sm outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            />
+            <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={controlClass}>
+              <option value="name">Sort: Name A–Z</option>
+              <option value="score_desc">Sort: Score ↓</option>
+              <option value="score_asc">Sort: Score ↑</option>
+            </select>
+            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              <input type="checkbox" checked={showMissing} onChange={(e) => setShowMissing(e.target.checked)} />
+              Show students without results
+            </label>
+          </div>
+
+          <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white/80 dark:border-slate-700/80 dark:bg-slate-900/40">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-white/95 backdrop-blur dark:bg-slate-950/90">
+                <tr className="border-b border-slate-100 text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:border-slate-700/80">
+                  <th className="px-3 py-2 text-left">#</th>
+                  <th className="px-3 py-2 text-left">Student</th>
+                  <th className="px-3 py-2 text-center">Score</th>
+                  <th className="px-3 py-2 text-center">Percent</th>
+                  <th className="px-3 py-2 text-left">Submitted</th>
                 </tr>
-              ) : filteredRows.map((row) => {
-                const isAtRisk = (row.final_grade !== null && row.final_grade !== undefined && row.final_grade < 75)
-                return (
-                  <tr
-                    key={`row-${row.student_id}`}
-                    className={`border-b border-slate-100 dark:border-slate-800 ${isAtRisk ? 'bg-rose-50/30 dark:bg-rose-900/15' : 'hover:bg-slate-50/60 dark:hover:bg-slate-800/30'}`}
-                  >
-                    {/* Student cell — sticky */}
-                    <td className={`sticky left-0 z-10 bg-white py-2.5 pr-4 dark:bg-slate-900 ${isAtRisk ? 'border-l-2 border-rose-300 pl-2 dark:border-rose-700' : 'pl-0'}`}>
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                          {initials(`${row.given_name || ''} ${row.surname || ''}`.trim())}
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">No students match.</td></tr>
+                ) : rows.map((r, i) => {
+                  const pct = hasScore(r) ? scorePercent(r.score, total) : null
+                  return (
+                    <tr key={r.student_id} className="border-b border-slate-100 hover:bg-slate-50/60 dark:border-slate-800 dark:hover:bg-slate-800/30">
+                      <td className="px-3 py-2 text-xs text-slate-400">{i + 1}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                            {initials(`${r.given_name || ''} ${r.surname || ''}`.trim())}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                              {formatStudentFullName(r.given_name, r.middle_name, r.surname)}
+                            </p>
+                            <p className="font-mono text-[10px] text-slate-400">{r.student_code}</p>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
-                            {formatStudentFullName(row.given_name, row.middle_name, row.surname)}
-                          </p>
-                          <p className="font-mono text-[10px] text-slate-400">{row.student_code}</p>
-                        </div>
-                      </div>
-                    </td>
-                    {/* Written Work score cells */}
-                    {wwActivities.map((act) => {
-                      const detail = getStudentScore(row, act)
-                      const score = detail?.score ?? null
-                      const isEditing = editingCell?.activityId === act.activity_id && editingCell?.studentId === row.student_id
-                      const isSaving = savingCell?.activityId === act.activity_id && savingCell?.studentId === row.student_id
-                      return (
-                        <td
-                          key={`ww-${row.student_id}-${act.activity_id}`}
-                          className="border-l border-violet-100/70 bg-violet-50/20 px-1 py-1 text-center dark:border-violet-700/20 dark:bg-violet-900/5"
-                        >
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              // eslint-disable-next-line jsx-a11y/no-autofocus
-                              autoFocus
-                              value={cellDraft}
-                              onFocus={oskFocus}
-                              onChange={(e) => {
-                                const val = e.target.value
-                                if (val === '' || val === '.') { setCellDraft(val); return }
-                                const num = parseFloat(val)
-                                setCellDraft(!isNaN(num) && num > act.max_score ? String(act.max_score) : val)
-                              }}
-                              onBlur={() => commitCell(act.activity_id, row.student_id)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') { e.preventDefault(); commitCell(act.activity_id, row.student_id) }
-                                if (e.key === 'Escape') setEditingCell(null)
-                              }}
-                              className="w-14 rounded border border-brand-400 bg-white px-1 py-0.5 text-center text-xs font-bold text-slate-700 outline-none ring-1 ring-brand-300 dark:bg-slate-800 dark:text-slate-100"
-                            />
-                          ) : (
-                            <button
-                              type="button"
-                              title={`${act.title} — click to edit`}
-                              onClick={() => { setEditingCell({ activityId: act.activity_id, studentId: row.student_id }); setCellDraft(score !== null ? String(score) : '') }}
-                              className={`w-full rounded px-2 py-0.5 text-xs font-semibold transition ${isSaving ? 'opacity-50' : ''} ${score !== null ? 'text-slate-700 dark:text-slate-200' : 'text-slate-300 hover:text-slate-500 dark:text-slate-600'} hover:bg-violet-100 dark:hover:bg-violet-900/20`}
-                            >
-                              {isSaving ? '…' : score !== null ? score : '—'}
-                            </button>
-                          )}
-                        </td>
-                      )
-                    })}
-                    {/* WW component % */}
-                    {wwActivities.length > 0 && (
-                      <td className="border-l border-violet-200 bg-violet-50/40 px-2 py-1 text-center dark:border-violet-700/30 dark:bg-violet-900/10">
-                        <span className={`text-xs font-bold ${row.ww_component_pct !== null ? 'text-violet-700 dark:text-violet-300' : 'text-slate-300 dark:text-slate-600'}`}>
-                          {row.ww_component_pct !== null ? `${row.ww_component_pct}%` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        {hasScore(r) ? (
+                          <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{r.score}<span className="font-normal text-slate-400">/{total}</span></span>
+                        ) : canScan ? (
+                          <button
+                            type="button"
+                            onClick={() => onScanStudent(r, exam)}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                          >
+                            Not taken · Enter
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-semibold text-slate-400">Not taken</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${averageBadgeBg(pct)}`}>
+                          {formatPercent(pct)}
                         </span>
                       </td>
-                    )}
-                    {/* Performance Task score cells */}
-                    {ptActivities.map((act) => {
-                      const detail = getStudentScore(row, act)
-                      const score = detail?.score ?? null
-                      const isEditing = editingCell?.activityId === act.activity_id && editingCell?.studentId === row.student_id
-                      const isSaving = savingCell?.activityId === act.activity_id && savingCell?.studentId === row.student_id
-                      return (
-                        <td
-                          key={`pt-${row.student_id}-${act.activity_id}`}
-                          className="border-l border-teal-100/70 bg-teal-50/20 px-1 py-1 text-center dark:border-teal-700/20 dark:bg-teal-900/5"
-                        >
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              // eslint-disable-next-line jsx-a11y/no-autofocus
-                              autoFocus
-                              value={cellDraft}
-                              onFocus={oskFocus}
-                              onChange={(e) => {
-                                const val = e.target.value
-                                if (val === '' || val === '.') { setCellDraft(val); return }
-                                const num = parseFloat(val)
-                                setCellDraft(!isNaN(num) && num > act.max_score ? String(act.max_score) : val)
-                              }}
-                              onBlur={() => commitCell(act.activity_id, row.student_id)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') { e.preventDefault(); commitCell(act.activity_id, row.student_id) }
-                                if (e.key === 'Escape') setEditingCell(null)
-                              }}
-                              className="w-14 rounded border border-brand-400 bg-white px-1 py-0.5 text-center text-xs font-bold text-slate-700 outline-none ring-1 ring-brand-300 dark:bg-slate-800 dark:text-slate-100"
-                            />
-                          ) : (
-                            <button
-                              type="button"
-                              title={`${act.title} — click to edit`}
-                              onClick={() => { setEditingCell({ activityId: act.activity_id, studentId: row.student_id }); setCellDraft(score !== null ? String(score) : '') }}
-                              className={`w-full rounded px-2 py-0.5 text-xs font-semibold transition ${isSaving ? 'opacity-50' : ''} ${score !== null ? 'text-slate-700 dark:text-slate-200' : 'text-slate-300 hover:text-slate-500 dark:text-slate-600'} hover:bg-teal-100 dark:hover:bg-teal-900/20`}
-                            >
-                              {isSaving ? '…' : score !== null ? score : '—'}
-                            </button>
-                          )}
-                        </td>
-                      )
-                    })}
-                    {/* PT component % */}
-                    {ptActivities.length > 0 && (
-                      <td className="border-l border-teal-200 bg-teal-50/40 px-2 py-1 text-center dark:border-teal-700/30 dark:bg-teal-900/10">
-                        <span className={`text-xs font-bold ${row.pt_component_pct !== null ? 'text-teal-700 dark:text-teal-300' : 'text-slate-300 dark:text-slate-600'}`}>
-                          {row.pt_component_pct !== null ? `${row.pt_component_pct}%` : '—'}
-                        </span>
-                      </td>
-                    )}
-                    {/* Quarterly Assessment score cells (read-only) */}
-                    {qaActivities.map((act) => {
-                      const detail = getStudentScore(row, act)
-                      const score = detail?.score ?? null
-                      const total = act.total_items ?? act.max_score
-                      const isPending = detail?.status === 'pending'
-                      return (
-                        <td
-                          key={`qa-${row.student_id}-${act.activity_id}`}
-                          className="border-l border-blue-100/70 bg-blue-50/20 px-2 py-1 text-center dark:border-blue-700/20 dark:bg-blue-900/5"
-                        >
-                          {score !== null ? (
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{score}<span className="font-normal text-slate-400">/{total}</span></span>
-                          ) : isPending ? (
-                            <button
-                              type="button"
-                              onClick={() => onOpenPendingActivity(row, detail)}
-                              className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/20"
-                            >
-                              Pending
-                            </button>
-                          ) : (
-                            <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
-                          )}
-                        </td>
-                      )
-                    })}
-                    {/* QA component % */}
-                    {qaActivities.length > 0 && (
-                      <td className="border-l border-blue-200 bg-blue-50/40 px-2 py-1 text-center dark:border-blue-700/30 dark:bg-blue-900/10">
-                        <span className={`text-xs font-bold ${row.qa_component_pct !== null ? 'text-blue-700 dark:text-blue-300' : 'text-slate-300 dark:text-slate-600'}`}>
-                          {row.qa_component_pct !== null ? `${row.qa_component_pct}%` : '—'}
-                        </span>
-                      </td>
-                    )}
-                    {/* Final Grade */}
-                    {(() => {
-                      const details = Array.isArray(row.published_details) ? row.published_details : []
-                      const allGraded = details.length > 0 && details.every((d) => d.status === 'checked')
-                      const displayGrade = selectedQuarter !== 'all'
-                        ? (row.final_grade ?? provisionalGrade(row))
-                        : (allGraded ? (row.final_grade ?? provisionalGrade(row)) : null)
-                      return (
-                        <td className="border-l border-slate-200 px-2 py-1 text-center dark:border-slate-700">
-                          {displayGrade !== null ? (
-                            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${averageBadgeBg(displayGrade)}`}>
-                              {formatPercent(displayGrade)}
-                            </span>
-                          ) : (
-                            <span className="inline-block rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-400 dark:bg-slate-800 dark:text-slate-500">
-                              N/A
-                            </span>
-                          )}
-                        </td>
-                      )
-                    })()}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
+                      <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{formatSubmittedAt(r.submitted_at) || '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : analysis.n === 0 ? (
         <EmptyState
           icon={<GradebookIcon size="lg" />}
-          title="No gradebook data yet"
-          description="Enroll students and publish Exam, Written Work, or Performance Task activities to see grades here."
+          title="No scanned answers yet"
+          description="Item analysis appears once at least one answer sheet for this exam has been scanned."
         />
-      )}
-      {publishedActivities.length > 0 && (
-        <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
-          {selectedQuarter === 'all'
-            ? 'Final Grade shows only when all activities across all quarters are graded. Select Q1–Q4 to view per-quarter grades.'
-            : 'Click a Written Work or Performance Task cell to enter a score. Exam scores come from the scanner.'}
-        </p>
+      ) : (
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+            {['Retain', 'Revise', 'Reject'].map((d) => (
+              <span key={d} className={`rounded-full px-2.5 py-0.5 ${DECISION_STYLES[d]}`}>{d}: {decisionCounts[d] || 0}</span>
+            ))}
+            <span className="text-slate-400">
+              {analysis.n} examinees · upper/lower groups of {analysis.groupSize} (27%)
+            </span>
+          </div>
+          {analysis.n < 10 && (
+            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-700/70 dark:bg-amber-900/25 dark:text-amber-300">
+              Only {analysis.n} examinee{analysis.n === 1 ? '' : 's'} so far. Item statistics are unreliable with this few results.
+            </p>
+          )}
+
+          <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white/80 dark:border-slate-700/80 dark:bg-slate-900/40">
+            <table className="min-w-full text-xs">
+              <thead className="sticky top-0 z-10 bg-white/95 backdrop-blur dark:bg-slate-950/90">
+                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:border-slate-700/80">
+                  <th className="px-2 py-2 text-center">Item</th>
+                  <th className="px-2 py-2 text-center">Key</th>
+                  <th className="px-2 py-2 text-center">Correct</th>
+                  <th className="px-2 py-2 text-center">Difficulty (p)</th>
+                  <th className="px-2 py-2 text-center">Discrimination (D)</th>
+                  <th className="px-2 py-2 text-center">Decision</th>
+                  {analysis.options.map((o) => <th key={o} className="border-l border-slate-100 px-2 py-2 text-center dark:border-slate-800">{o}</th>)}
+                  <th className="px-2 py-2 text-center">Blank</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analysis.items.map((it) => (
+                  <tr key={it.item} className="border-b border-slate-100 hover:bg-slate-50/60 dark:border-slate-800 dark:hover:bg-slate-800/30">
+                    <td className="px-2 py-1.5 text-center font-semibold text-slate-600 dark:text-slate-300">{it.item}</td>
+                    <td className="px-2 py-1.5 text-center font-mono font-bold text-emerald-700 dark:text-emerald-300">{it.key || '—'}</td>
+                    <td className="px-2 py-1.5 text-center text-slate-600 dark:text-slate-300">{it.correct}/{analysis.n}</td>
+                    <td className="px-2 py-1.5 text-center">
+                      <span className="mr-1 font-mono text-slate-600 dark:text-slate-300">{it.p?.toFixed(2) ?? '—'}</span>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${DIFFICULTY_STYLES[it.difficulty] || NEUTRAL_CHIP}`}>{it.difficulty}</span>
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      <span className="mr-1 font-mono text-slate-600 dark:text-slate-300">{it.d?.toFixed(2) ?? '—'}</span>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${DISCRIMINATION_STYLES[it.discrimination] || NEUTRAL_CHIP}`}>{it.discrimination}</span>
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-bold ${DECISION_STYLES[it.decision] || NEUTRAL_CHIP}`}>{it.decision}</span>
+                    </td>
+                    {analysis.options.map((o) => (
+                      <td
+                        key={o}
+                        className={`border-l border-slate-100 px-2 py-1.5 text-center dark:border-slate-800 ${
+                          o === it.key ? 'bg-emerald-50 font-bold text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
+                        {it.counts[o] || 0}
+                      </td>
+                    ))}
+                    <td className="px-2 py-1.5 text-center text-slate-400">{it.blank}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
+            p = share of examinees who answered correctly. D = upper-group minus lower-group correct, divided by group size.
+            Retain: p between 0.21–0.80 and D ≥ 0.20. Revise: only one holds. Reject: neither holds, or D is negative.
+            Green cells mark the keyed answer; other columns show how many picked each distractor.
+          </p>
+        </>
       )}
     </div>
   )
@@ -2657,10 +2534,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [students, setStudents]                   = useState([])
   const [activities, setActivities]               = useState([])
   const [announcements, setAnnouncements]         = useState([])
-  const [gradebook, setGradebook]                 = useState([])
-  const [gradebookPublishedActivities, setGradebookPublishedActivities] = useState([])
-  const [gradeWeights, setGradeWeights]           = useState({ written_work: 0, performance_task: 0, quarterly_assessment: 0 })
-  const [selectedQuarter, setSelectedQuarter]     = useState('all')
+  const [examResults, setExamResults]             = useState([])
   const [loading, setLoading]                     = useState(false)
   const [error, setError]                         = useState('')
   const [busyAction, setBusyAction]               = useState('')
@@ -2742,16 +2616,11 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     const linkedTemplates = allTemplates.filter((exam) => linkedIds.has(String(exam.id)))
     return linkedTemplates.length ? linkedTemplates : allTemplates
   }, [activities, scan.exams])
-  const atRiskStudents      = useMemo(() => gradebook.filter((r) => {
-    const fg = r.final_grade ?? r.average_percent
-    return fg !== null && fg !== undefined && Number(fg) < 75
-  }), [gradebook])
-
   // Build tab list dynamically
   const tabs = useMemo(() => {
     const base = ['roster', 'activities', 'announcements']
     if (hasScanCenter) base.push('scan')
-    base.push('gradebook')
+    base.push('results')
     return base
   }, [hasScanCenter])
 
@@ -2760,41 +2629,26 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     activities:    activities.length,
     announcements: announcements.length,
     scan:          scanTemplates.length,
-    gradebook:     gradebook.length,
-  }), [students, activities, announcements, scanTemplates.length, gradebook])
+    results:       examResults.length,
+  }), [students, activities, announcements, scanTemplates.length, examResults])
 
   async function loadSubjects() {
     const res = await apiGet(withEducator('/lms/subjects'))
     setSubjects(res.data || [])
   }
 
-  function applyGradebookResponse(gR) {
-    const gradebookData = gR.data || []
-    if (Array.isArray(gradebookData)) {
-      setGradebook(gradebookData)
-      setGradebookPublishedActivities([])
-    } else {
-      setGradebook(gradebookData.rows || [])
-      setGradebookPublishedActivities(gradebookData.published_activities || [])
-      if (gradebookData.grade_weights) setGradeWeights(gradebookData.grade_weights)
-    }
-  }
-
-  async function loadSubjectDetails(id, quarter) {
+  async function loadSubjectDetails(id) {
     if (!id) return
-    const quarterParam = quarter && quarter !== 'all' ? `?quarter=${quarter}` : ''
-    const [sR, aR, anR, gR, gwR] = await Promise.all([
+    const [sR, aR, anR, erR] = await Promise.all([
       apiGet(withEducator(`/lms/subjects/${id}/students`)),
       apiGet(withEducator(`/lms/subjects/${id}/activities`)),
       apiGet(withEducator(`/lms/subjects/${id}/announcements`)),
-      apiGet(withEducator(`/lms/subjects/${id}/gradebook${quarterParam}`)),
-      apiGet(withEducator(`/lms/subjects/${id}/grade-weights`)),
+      apiGet(withEducator(`/lms/subjects/${id}/exam-results`)),
     ])
     setStudents(sR.data || [])
     setActivities(aR.data || [])
     setAnnouncements(anR.data || [])
-    applyGradebookResponse(gR)
-    if (gwR.data) setGradeWeights(gwR.data)
+    setExamResults(erR.data?.exams || [])
   }
 
   async function refreshSubjectAndHomepage(id) {
@@ -2821,6 +2675,14 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
   }, [selectedSubjectId])
+
+  // Batch scan commits happen outside this component, so refetch whenever the tab opens
+  useEffect(() => {
+    if (activeTab !== 'results' || !selectedSubjectId) return
+    apiGet(withEducator(`/lms/subjects/${selectedSubjectId}/exam-results`))
+      .then((res) => setExamResults(res.data?.exams || []))
+      .catch((e) => showToast(e.message))
+  }, [activeTab, selectedSubjectId])
 
   useEffect(() => {
     const submissionId = scan?.lastResult?.submission_id
@@ -2895,7 +2757,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
         try {
           await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
           setSelectedSubjectId('')
-          setStudents([]); setActivities([]); setAnnouncements([]); setGradebook([]); setGradebookPublishedActivities([])
+          setStudents([]); setActivities([]); setAnnouncements([]); setExamResults([])
           await loadSubjects()
         } catch (err) { showToast(err.message) } finally { setBusyAction('') }
       },
@@ -3244,36 +3106,6 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     setActiveTab('scan')
   }
 
-  async function handleSaveGradeWeights(weights) {
-    if (!selectedSubjectId) return
-    try {
-      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/grade-weights`), weights)
-      setGradeWeights(weights)
-    } catch (err) { showToast(err.message) }
-  }
-
-  async function handleSaveScore(activityId, studentId, score) {
-    if (!selectedSubjectId) return
-    try {
-      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/activities/${activityId}/scores`), {
-        scores: [{ student_id: studentId, score }],
-      })
-      const quarterParam = selectedQuarter !== 'all' ? `?quarter=${selectedQuarter}` : ''
-      const gR = await apiGet(withEducator(`/lms/subjects/${selectedSubjectId}/gradebook${quarterParam}`))
-      applyGradebookResponse(gR)
-    } catch (err) { showToast(err.message) }
-  }
-
-  async function handleQuarterChange(quarter) {
-    setSelectedQuarter(quarter)
-    if (!selectedSubjectId) return
-    try {
-      const quarterParam = quarter !== 'all' ? `?quarter=${quarter}` : ''
-      const gR = await apiGet(withEducator(`/lms/subjects/${selectedSubjectId}/gradebook${quarterParam}`))
-      applyGradebookResponse(gR)
-    } catch (err) { showToast(err.message) }
-  }
-
   /* ── render ─────────────────────────────────────────── */
   return (
     <main className="mx-auto max-w-7xl px-4 pt-3 pb-6 sm:px-6 lg:px-8">
@@ -3505,18 +3337,12 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 manualContext={scanManualContext}
               />
             )}
-            {activeTab === 'gradebook' && (
-              <GradebookTab
-                gradebook={gradebook}
-                atRiskStudents={atRiskStudents}
-                publishedActivities={gradebookPublishedActivities}
-                gradeWeights={gradeWeights}
-                selectedQuarter={selectedQuarter}
+            {activeTab === 'results' && (
+              <ExamResultsTab
+                exams={examResults}
                 selectedSubject={selectedSubject}
-                onOpenPendingActivity={onOpenPendingActivity}
-                onSaveGradeWeights={handleSaveGradeWeights}
-                onSaveScore={handleSaveScore}
-                onQuarterChange={handleQuarterChange}
+                canScan={hasScanCenter}
+                onScanStudent={onOpenPendingActivity}
               />
             )}
           </div>
@@ -3786,7 +3612,6 @@ function BellIcon({ size = 'sm' })      { return <svg className={SZ[size]} viewB
 function ScanIcon({ size = 'sm' })      { return <svg className={SZ[size] || SZ.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg> }
 function GradebookIcon({ size = 'sm' }) { return <svg className={SZ[size] || SZ.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg> }
 function SubjectIcon({ size = 'sm' })   { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> }
-function RiskIcon({ size = 'sm' })      { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> }
 function DocIcon({ size = 'sm' })       { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> }
 function PenIcon({ size = 'sm' })       { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4z"/></svg> }
 function PlusIcon()                     { return <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> }

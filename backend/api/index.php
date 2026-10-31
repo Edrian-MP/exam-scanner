@@ -1779,6 +1779,100 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
     ]);
 }
 
+if (preg_match('#^/lms/subjects/(\d+)/exam-results$#', $path, $matches) && $method === 'GET') {
+    $educatorId = require_lms_educator_id();
+    $subjectId  = (int) $matches[1];
+    find_subject_or_404($subjectId, $educatorId);
+
+    // ── Students enrolled in this subject ────────────────────────────
+    $studentsStmt = db()->prepare(
+        'SELECT st.id AS student_id, st.student_code, st.surname, st.given_name, st.middle_name
+         FROM subject_students ss
+         INNER JOIN students st ON st.id = ss.student_id
+         WHERE ss.subject_id = :subject_id
+         ORDER BY st.surname ASC, st.given_name ASC, st.middle_name ASC'
+    );
+    $studentsStmt->execute([':subject_id' => $subjectId]);
+    $students = $studentsStmt->fetchAll();
+
+    // ── Exam activities linked to an answer key ───────────────────────
+    $examStmt = db()->prepare(
+        'SELECT a.id AS activity_id, a.title, a.exam_id, a.publish_status, a.due_at, a.created_at,
+                ex.total_items, ex.answer_key
+         FROM subject_activities a
+         INNER JOIN exams ex ON ex.id = a.exam_id
+         WHERE a.subject_id = :subject_id
+           AND a.activity_type = "exam"
+         ORDER BY COALESCE(a.due_at, a.created_at) DESC, a.id DESC'
+    );
+    $examStmt->execute([':subject_id' => $subjectId]);
+    $examRows = $examStmt->fetchAll();
+
+    // ── Latest submission per student/exam (later rows overwrite earlier) ─
+    $latest = [];
+    $examIds = array_values(array_unique(array_map(static fn($r) => (int) $r['exam_id'], $examRows)));
+    if (count($examIds) > 0) {
+        $ph = implode(',', array_fill(0, count($examIds), '?'));
+        $subStmt = db()->prepare(sprintf(
+            'SELECT id, exam_id, student_code, answers, score, created_at
+             FROM submissions WHERE exam_id IN (%s)
+             ORDER BY created_at ASC, id ASC', $ph
+        ));
+        $subStmt->execute($examIds);
+        foreach ($subStmt->fetchAll() as $sr) {
+            $sc = strtoupper(trim((string) ($sr['student_code'] ?? '')));
+            if ($sc === '') continue;
+            $latest[(int) $sr['exam_id']][$sc] = $sr;
+        }
+    }
+
+    $exams = [];
+    foreach ($examRows as $er) {
+        $examId     = (int) $er['exam_id'];
+        $totalItems = (int) $er['total_items'];
+        $key        = parse_answers_input(strtoupper((string) $er['answer_key']));
+
+        $results = [];
+        foreach ($students as $student) {
+            $sc  = strtoupper(trim((string) ($student['student_code'] ?? '')));
+            $sub = $latest[$examId][$sc] ?? null;
+            $answers = null;
+            if ($sub !== null) {
+                // keep blanks so item positions line up with the key
+                $answers = array_map(
+                    static fn($a) => normalize_answer_token((string) $a),
+                    array_slice(explode('|', (string) $sub['answers']), 0, $totalItems)
+                );
+                $answers = array_pad($answers, $totalItems, '');
+            }
+            $results[] = [
+                'student_id'    => (int) $student['student_id'],
+                'student_code'  => (string) $student['student_code'],
+                'surname'       => (string) ($student['surname'] ?? ''),
+                'given_name'    => (string) ($student['given_name'] ?? ''),
+                'middle_name'   => (string) ($student['middle_name'] ?? ''),
+                'submission_id' => $sub !== null ? (int) $sub['id'] : null,
+                'score'         => $sub !== null ? (int) $sub['score'] : null,
+                'answers'       => $answers,
+                'submitted_at'  => $sub['created_at'] ?? null,
+            ];
+        }
+
+        $exams[] = [
+            'activity_id'    => (int) $er['activity_id'],
+            'title'          => (string) $er['title'],
+            'exam_id'        => $examId,
+            'publish_status' => (string) $er['publish_status'],
+            'due_at'         => $er['due_at'] ?? null,
+            'total_items'    => $totalItems,
+            'answer_key'     => $key,
+            'results'        => $results,
+        ];
+    }
+
+    json_response(200, ['ok' => true, 'data' => ['exams' => $exams]]);
+}
+
 /* ═══════════════════════════════════════════════════════
    EXAM CODE LOOKUP  (used by OMR service)
 ═══════════════════════════════════════════════════════ */
