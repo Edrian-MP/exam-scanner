@@ -32,6 +32,11 @@ const unsigned long JAM_ALARM_ON_MS = 800;
 const unsigned long JAM_ALARM_OFF_MS = 350;
 const int MAX_FEED_ATTEMPTS = 3;
 
+// soft start: ramp PWM up gradually so the roller grips instead of slipping
+const int SOFT_START_MIN_PWM = 80;
+const unsigned long SOFT_START_MS = 250;
+const unsigned long SOFT_START_STEP_MS = 10;
+
 bool jamAlarmActive = false;
 bool jamAlarmToneOn = false;
 unsigned long jamAlarmLastToggleAt = 0;
@@ -299,41 +304,39 @@ void feedOneSheet() {
   finishFeed("PAPER_JAM");
 }
 
+// Set direction, ramp PWM up to targetPwm, then hold it for holdMs.
+bool driveMotor(bool forward, int targetPwm, unsigned long holdMs) {
+  digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(IN1, forward ? HIGH : LOW);
+  digitalWrite(IN2, forward ? LOW : HIGH);
+
+  int steps = SOFT_START_MS / SOFT_START_STEP_MS;
+  for (int i = 1; i <= steps; i++) {
+    int pwm = SOFT_START_MIN_PWM + (long)(targetPwm - SOFT_START_MIN_PWM) * i / steps;
+    analogWrite(ENA, pwm);
+    if (!delayWithStop(SOFT_START_STEP_MS)) return false;
+  }
+
+  analogWrite(ENA, targetPwm);
+  return delayWithStop(holdMs);
+}
+
 bool runSequence() {
   // Feed IN
-  digitalWrite(LED_BUILTIN, HIGH);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  analogWrite(ENA, 255);
-  digitalWrite(LED_BUILTIN, LOW);
-  if (!delayWithStop(650)) return false;
+  if (!driveMotor(true, 255, 650)) return false;
 
   // brake
   analogWrite(ENA, 0);
   if (!delayWithStop(500)) return false;
 
   // feed out
-  digitalWrite(LED_BUILTIN, HIGH);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  analogWrite(ENA, 200);
-  if (!delayWithStop(500)) return false;
-
-  digitalWrite(LED_BUILTIN, HIGH);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  analogWrite(ENA, 200);
-  if (!delayWithStop(800)) return false;
+  if (!driveMotor(false, 200, 1300)) return false;
 
   analogWrite(ENA, 0);
   if (!delayWithStop(500)) return false;
 
   // after push
-  digitalWrite(LED_BUILTIN, HIGH);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  analogWrite(ENA, 255);
-  if (!delayWithStop(500)) return false;
+  if (!driveMotor(false, 255, 500)) return false;
 
   // brake
   analogWrite(ENA, 0);
