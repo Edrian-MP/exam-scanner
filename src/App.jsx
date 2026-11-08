@@ -385,23 +385,32 @@ function App() {
     return lastStatus ? !lastStatus?.scanner?.batch_running : false
   }
 
-  async function onStartBatchScan() {
+  async function startScanSession(mode) {
     setBusy(true)
     setError('')
     try {
       const sessionResult = await apiPost('/scan/session/start', {})
       const sessionId = sessionResult?.data?.session_id
       if (!sessionId) throw new Error('Failed to create scan session.')
-      setScanSession({ session_id: sessionId, status: 'scanning' })
+      setScanSession({ session_id: sessionId, status: 'scanning', mode })
       setStagedSheets([])
       // Tell Python service to start — returns immediately, scan runs in background
-      await apiPost('/scanner/batch-scan', { session_id: sessionId })
+      await apiPost('/scanner/batch-scan', { session_id: sessionId, single: mode === 'single' })
     } catch (err) {
       setError(err.message)
       setScanSession(null)
     } finally {
       setBusy(false)
     }
+  }
+
+  function onStartBatchScan() {
+    return startScanSession('batch')
+  }
+
+  // Hand-fed single sheet: skips the Arduino feeder, scans one sheet, then stops.
+  function onStartSingleScan() {
+    return startScanSession('single')
   }
 
   async function onStopBatchScan() {
@@ -774,6 +783,7 @@ function App() {
           scanSession,
           stagedSheets,
           onStartBatchScan,
+          onStartSingleScan,
           onStopBatchScan,
           onCommitSession,
           onDiscardSession,

@@ -1820,6 +1820,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   // ── Scanning mode ────────────────────────────────────────────────────────────
   if (sessionStatus === 'scanning' || sessionStatus === 'stopping') {
     const isStopping = sessionStatus === 'stopping'
+    const isSingle   = scan.scanSession?.mode === 'single'
     const okCount      = stagedSheets.filter((s) => s.status === 'ok').length
     const flaggedCount = stagedSheets.filter((s) => s.status === 'flagged').length
     const lastSheet    = stagedSheets[stagedSheets.length - 1] ?? null
@@ -1836,10 +1837,14 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
             </span>
             <div>
               <h3 className="text-sm font-bold text-slate-800">
-                {isStopping ? 'Stopping scanning...' : 'Scanning in progress...'}
+                {isStopping ? 'Stopping scanning...' : isSingle ? 'Single scan: insert one sheet' : 'Scanning in progress...'}
               </h3>
               <p className="text-xs text-slate-500">
-                {isStopping ? 'Finishing the current hardware step' : `${stagedSheets.length} sheet${stagedSheets.length !== 1 ? 's' : ''} processed`}
+                {isStopping
+                  ? 'Finishing the current hardware step'
+                  : isSingle
+                    ? 'Feed one answer sheet into the scanner by hand (landscape, long edge first). Waiting up to 60 seconds.'
+                    : `${stagedSheets.length} sheet${stagedSheets.length !== 1 ? 's' : ''} processed`}
               </p>
             </div>
           </div>
@@ -1908,7 +1913,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
           onCommit={scan.onCommitSession}
           onDiscard={scan.onDiscardSession}
           onUpdateSheet={scan.onUpdateStagedSheet}
-          onStartNew={scan.onStartBatchScan}
+          onStartNew={scan.scanSession?.mode === 'single' ? scan.onStartSingleScan : scan.onStartBatchScan}
         />
       </div>
     )
@@ -1958,6 +1963,17 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         >
           {scan.busy ? <><SpinIcon /> Starting…</> : <><ScanIcon /> Start Batch Scan</>}
         </button>
+        <button
+          type="button"
+          onClick={scan.onStartSingleScan}
+          disabled={scan.busy || !scannerConnected}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ScanIcon /> Single Scan (manual feed)
+        </button>
+        <p className="text-xs text-slate-500">
+          Single Scan skips the feeder: insert one sheet into the scanner by hand to test the checking.
+        </p>
         {!scannerConnected && (
           <p className="text-xs text-amber-700">Scanner service must be running and connected.</p>
         )}

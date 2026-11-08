@@ -7,6 +7,7 @@ Endpoints
 GET  /status         → scanner / Arduino connection status
 POST /scan           → legacy single-scan (kept for backwards compatibility)
 POST /batch-scan     → start a background batch scan loop for a session
+                       (single=true: one hand-fed sheet, no Arduino feeder)
 POST /batch-stop     → signal the running batch loop to stop
 """
 
@@ -70,6 +71,7 @@ MAX_UNREADABLE    = 40       # consecutive unreadable sheets before stopping
 STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
 ADF_WAIT_TIMEOUT  = 30      # seconds to wait for user to insert the next paper
 ADF_POLL_INTERVAL = 2       # seconds between ADF-empty retry attempts
+SINGLE_WAIT_TIMEOUT = 60    # seconds to wait for a hand-fed sheet in single-scan mode
 OUT_DIR           = Path(__file__).resolve().parent / "scans"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -298,10 +300,11 @@ def post_sheet_to_api(session_id: str, result_dict: dict) -> None:
 
 # ── Batch scan loop ───────────────────────────────────────────────────────────
 
-def _batch_loop(session_id: str, use_hardware: bool) -> None:
+def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> None:
     """
     Background thread: feed + scan + post loop.
     Stops on: stop flag, no-paper timeout, or MAX_UNREADABLE consecutive failures.
+    In single mode the Arduino feeder is skipped and the loop ends after one sheet.
     """
     if pythoncom is not None:
         pythoncom.CoInitialize()
@@ -312,7 +315,7 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
         batch_reason    = "stopped"
         batch_message   = "Batch stopped."
 
-        if use_hardware and _SERIAL_AVAILABLE:
+        if use_hardware and _SERIAL_AVAILABLE and not single:
             try:
                 ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_READ_TIMEOUT)
                 time.sleep(2)  # wait for Arduino to boot
@@ -354,8 +357,11 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
             # 2. Scan — poll until paper is inserted, timeout, or stop requested.
             pil_image = None
             if use_hardware and _WIA_AVAILABLE and _PIL_AVAILABLE:
-                wait_deadline = time.time() + ADF_WAIT_TIMEOUT
+                wait_timeout = SINGLE_WAIT_TIMEOUT if single else ADF_WAIT_TIMEOUT
+                wait_deadline = time.time() + wait_timeout
                 logged_waiting = False
+                if single:
+                    STATE.waiting_for_paper = True
                 while not STATE.should_stop():
                     try:
                         pil_image = scan_sheet_wia()
@@ -392,10 +398,14 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
                         if time.time() >= wait_deadline:
                             logger.info(
                                 "ADF empty — no paper inserted within %ds — batch complete.",
-                                ADF_WAIT_TIMEOUT,
+                                wait_timeout,
                             )
-                            batch_reason = "completed"
-                            batch_message = "Scanner ADF reported no more paper. Batch scan complete."
+                            if single:
+                                batch_reason = "no_paper"
+                                batch_message = f"No sheet was inserted within {wait_timeout} seconds."
+                            else:
+                                batch_reason = "completed"
+                                batch_message = "Scanner ADF reported no more paper. Batch scan complete."
                             STATE.waiting_for_paper = False
                             break
                         if not logged_waiting:
@@ -444,6 +454,11 @@ def _batch_loop(session_id: str, use_hardware: bool) -> None:
 
             STATE.last_scan_at = datetime.now().isoformat()
             STATE.last_output  = str(debug_path)
+
+            if single:
+                batch_reason = "completed"
+                batch_message = "Single scan complete."
+                break
 
             # 6. Safety cutoff
             if consecutive_bad >= MAX_UNREADABLE:
@@ -562,9 +577,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             use_hw = _WIA_AVAILABLE  # serial (Arduino) is optional; WIA drives hardware mode
+            single = bool(payload.get("single", False))
             t = threading.Thread(
                 target=_batch_loop,
-                args=(session_id, use_hw),
+                args=(session_id, use_hw, single),
                 daemon=True,
             )
             STATE.attach_thread(t)
@@ -573,6 +589,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "data": {
                 "session_id":   session_id,
                 "hardware_mode": use_hw,
+                "single":       single,
             }})
             return
 
