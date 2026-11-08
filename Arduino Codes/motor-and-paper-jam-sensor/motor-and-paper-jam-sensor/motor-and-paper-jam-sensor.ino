@@ -39,6 +39,13 @@ const int SOFT_START_MIN_PWM = 150;
 const unsigned long SOFT_START_MS = 150;
 const unsigned long FEED_IN_HOLD_MS = 800;
 
+// transfer: roll toward the scanner until the scanner sensor sees the sheet,
+// then push it a fixed extra amount into the scanner's intake
+const int TRANSFER_PWM = 200;
+const unsigned long TRANSFER_TIMEOUT_MS = 3000;
+const int HANDOFF_PUSH_PWM = 255;
+const unsigned long HANDOFF_PUSH_MS = 500;
+
 bool jamAlarmActive = false;
 bool jamAlarmToneOn = false;
 unsigned long jamAlarmLastToggleAt = 0;
@@ -337,18 +344,27 @@ bool runSequence() {
   analogWrite(ENA, 0);
   if (!delayWithStop(500)) return false;
 
-  // feed out
-  if (!driveMotor(false, 200, 1300)) return false;
+  // transfer to scanner: one continuous roll (no mid-way stop) until the
+  // scanner sensor sees the sheet, then a fixed push from that point so the
+  // hand-off is the same whether the sheet was picked up early or late
+  if (!driveMotor(false, TRANSFER_PWM, 0)) return false;
 
-  analogWrite(ENA, 0);
-  if (!delayWithStop(500)) return false;
+  unsigned long transferStartedAt = millis();
+  bool reached = false;
+  while (millis() - transferStartedAt < TRANSFER_TIMEOUT_MS) {
+    if (isScannerPaperDetected()) {
+      reached = true;
+      break;
+    }
+    if (!delayWithStop(SENSOR_POLL_MS)) return false;
+  }
 
-  // after push
-  if (!driveMotor(false, 255, 500)) return false;
-
-  // brake
-  analogWrite(ENA, 0);
-  if (!delayWithStop(1000)) return false;
+  if (reached) {
+    Serial.print("TRANSFER_MS:");
+    Serial.println(millis() - transferStartedAt);
+    analogWrite(ENA, HANDOFF_PUSH_PWM);
+    if (!delayWithStop(HANDOFF_PUSH_MS)) return false;
+  }
 
   stopMotor();
   return true;
