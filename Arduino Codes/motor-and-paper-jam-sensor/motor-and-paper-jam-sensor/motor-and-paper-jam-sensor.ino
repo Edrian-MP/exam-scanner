@@ -32,10 +32,12 @@ const unsigned long JAM_ALARM_ON_MS = 800;
 const unsigned long JAM_ALARM_OFF_MS = 350;
 const int MAX_FEED_ATTEMPTS = 3;
 
-// soft start: ramp PWM up gradually so the roller grips instead of slipping
-const int SOFT_START_MIN_PWM = 80;
-const unsigned long SOFT_START_MS = 250;
-const unsigned long SOFT_START_STEP_MS = 10;
+// soft start: ramp PWM up gradually so the roller grips instead of slipping.
+// The ramp starts above the motor's stall point so the roller is already
+// turning (and pulling the sheet) from the first moment of the feed.
+const int SOFT_START_MIN_PWM = 150;
+const unsigned long SOFT_START_MS = 150;
+const unsigned long FEED_IN_HOLD_MS = 800;
 
 bool jamAlarmActive = false;
 bool jamAlarmToneOn = false;
@@ -310,11 +312,17 @@ bool driveMotor(bool forward, int targetPwm, unsigned long holdMs) {
   digitalWrite(IN1, forward ? HIGH : LOW);
   digitalWrite(IN2, forward ? LOW : HIGH);
 
-  int steps = SOFT_START_MS / SOFT_START_STEP_MS;
-  for (int i = 1; i <= steps; i++) {
-    int pwm = SOFT_START_MIN_PWM + (long)(targetPwm - SOFT_START_MIN_PWM) * i / steps;
+  // time the ramp with millis() so it lasts SOFT_START_MS regardless of the
+  // extra time spent polling sensors/serial between steps
+  unsigned long rampStartedAt = millis();
+  unsigned long elapsed;
+  while ((elapsed = millis() - rampStartedAt) < SOFT_START_MS) {
+    int pwm = SOFT_START_MIN_PWM + (long)(targetPwm - SOFT_START_MIN_PWM) * elapsed / SOFT_START_MS;
     analogWrite(ENA, pwm);
-    if (!delayWithStop(SOFT_START_STEP_MS)) return false;
+    updateJamAlarm();
+    reportSensorChanges();
+    if (consumeStopCommand()) return false;
+    delay(5);
   }
 
   analogWrite(ENA, targetPwm);
@@ -323,7 +331,7 @@ bool driveMotor(bool forward, int targetPwm, unsigned long holdMs) {
 
 bool runSequence() {
   // Feed IN
-  if (!driveMotor(true, 255, 650)) return false;
+  if (!driveMotor(true, 255, FEED_IN_HOLD_MS)) return false;
 
   // brake
   analogWrite(ENA, 0);
