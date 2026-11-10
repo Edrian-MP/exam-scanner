@@ -60,6 +60,16 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Also keep a log file so feeder/scanner problems can be diagnosed after the fact
+try:
+    _LOG_DIR = Path(__file__).resolve().parent / "logs"
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _file_handler = logging.FileHandler(_LOG_DIR / "scanner-service.log", encoding="utf-8")
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(_file_handler)
+except Exception as _exc:  # never let logging setup stop the service
+    logger.warning("Could not open log file: %s", _exc)
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 PHP_API_BASE      = "http://localhost/exam-scanner/backend/api"
 SERIAL_PORT       = "COM4"
@@ -71,13 +81,24 @@ MAX_UNREADABLE    = 40       # consecutive unreadable sheets before stopping
 STOP_WAIT_SECONDS = 8.0     # max time /batch-stop waits for scanner loop shutdown
 ADF_WAIT_TIMEOUT  = 30      # seconds to wait for user to insert the next paper
 ADF_POLL_INTERVAL = 2       # seconds between ADF-empty retry attempts
+# If the scanner reports ADF empty right after the feeder said SHEET_FED, the
+# sheet stopped short of the scanner rollers: tap it in with the Arduino's PUSH
+# command and retry the scan. One entry per try, with more taps each time.
+HANDOFF_NUDGE_TAPS    = (4, 6, 8)
+HANDOFF_NUDGE_SETTLE  = 0.3  # seconds after PUSH_DONE before rescanning
+PUSH_REPLY_TIMEOUT    = 5.0  # seconds to wait for PUSH_DONE
 SINGLE_WAIT_TIMEOUT = 60    # seconds to wait for a hand-fed sheet in single-scan mode
+WIA_TRANSFER_TIMEOUT = 90   # seconds before a stuck WIA transfer is reported as a hang
+MAX_TRANSIENT_RETRIES = 10  # busy/warming-up/offline retries (ADF_POLL_INTERVAL apart) per sheet
 OUT_DIR           = Path(__file__).resolve().parent / "scans"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Set True when paper is fed landscape (long edge first) into the ES-50.
 # This swaps the WIA scan extents so the full paper width is captured,
 # then rotates the result to portrait before OMR processing.
+# False = portrait feed: short edge first, TOP edge (header) entering the scanner
+# first, so the scan comes out upright with no rotation. Portrait was tried and
+# pinched the sheet's tail in the feeder roller, so landscape is back in use.
 LANDSCAPE_FEED_MODE = True
 FINAL_FEED_STATUSES = {"SHEET_FED", "NO_PAPER", "PAPER_JAM", "FEED_CANCELLED"}
 
@@ -179,6 +200,53 @@ def _is_adf_empty_error(exc: Exception) -> bool:
     """Return True for WIA errors that mean the ADF has no paper (not a real scan failure)."""
     s = str(exc).lower()
     return "-2145320957" in str(exc) or "no documents" in s or "paper empty" in s
+
+
+# WIA errors that mean "not ready yet", not "this sheet failed": the scanner is
+# busy finishing the last sheet, warming up / waking from sleep, or briefly
+# dropped off USB. Retrying a few seconds later normally succeeds.
+_TRANSIENT_WIA_CODES = (
+    "-2145320955",  # WIA_ERROR_OFFLINE
+    "-2145320954",  # WIA_ERROR_BUSY
+    "-2145320953",  # WIA_ERROR_WARMING_UP
+    "-2145320950",  # WIA_ERROR_DEVICE_COMMUNICATION
+    "-2145320947",  # WIA_ERROR_DEVICE_LOCKED
+    "-2145320939",  # WIA_S_NO_DEVICE_AVAILABLE
+)
+
+
+def _is_transient_wia_error(exc: Exception) -> bool:
+    text = str(exc)
+    return any(code in text for code in _TRANSIENT_WIA_CODES) or "No WIA scanner device found" in text
+
+
+class ScanTimeoutError(RuntimeError):
+    """The WIA transfer did not return within WIA_TRANSFER_TIMEOUT."""
+
+
+def scan_sheet_wia_with_timeout(timeout: float = WIA_TRANSFER_TIMEOUT) -> "Image.Image":
+    """Run scan_sheet_wia in a worker thread so a hung driver can't freeze the batch."""
+    result: dict[str, Any] = {}
+
+    def worker() -> None:
+        if pythoncom is not None:
+            pythoncom.CoInitialize()
+        try:
+            result["image"] = scan_sheet_wia()
+        except Exception as exc:
+            result["error"] = exc
+        finally:
+            if pythoncom is not None:
+                pythoncom.CoUninitialize()
+
+    thread = threading.Thread(target=worker, name="wia-transfer", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise ScanTimeoutError(f"WIA transfer did not finish within {timeout:.0f}s")
+    if "error" in result:
+        raise result["error"]
+    return result["image"]
 
 
 # ── WIA scanning ──────────────────────────────────────────────────────────────
@@ -283,6 +351,21 @@ def feed_one_sheet(ser: Any) -> str:
     return "TIMEOUT"
 
 
+def push_sheet_into_scanner(ser: Any, taps: int) -> bool:
+    """Tap a sheet that stopped short into the scanner; True once the Arduino reports PUSH_DONE."""
+    send_arduino_command(ser, f"PUSH:{taps}")
+    deadline = time.time() + PUSH_REPLY_TIMEOUT
+    while time.time() < deadline:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if not line:
+            continue
+        logger.info("Arduino feeder: %s", line)
+        if line == "PUSH_DONE":
+            return True
+    logger.warning("No PUSH_DONE from Arduino within %ss (old sketch uploaded?)", PUSH_REPLY_TIMEOUT)
+    return False
+
+
 # ── Post sheet result to PHP API ──────────────────────────────────────────────
 
 def post_sheet_to_api(session_id: str, result_dict: dict) -> None:
@@ -360,13 +443,34 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
                 wait_timeout = SINGLE_WAIT_TIMEOUT if single else ADF_WAIT_TIMEOUT
                 wait_deadline = time.time() + wait_timeout
                 logged_waiting = False
+                nudges = 0
+                transient_retries = 0
                 if single:
                     STATE.waiting_for_paper = True
                 while not STATE.should_stop():
                     try:
-                        pil_image = scan_sheet_wia()
+                        pil_image = scan_sheet_wia_with_timeout()
                         break  # success
+                    except ScanTimeoutError as exc:
+                        # The driver is stuck; further scans would block too.
+                        logger.error("Scanner hung: %s", exc)
+                        batch_reason = "scan_error"
+                        batch_message = (
+                            f"Scanner stopped responding on sheet {sheet_index}. "
+                            "Unplug and reconnect the scanner, then restart the scanner service."
+                        )
+                        STATE.waiting_for_paper = False
+                        break
                     except Exception as exc:
+                        if _is_transient_wia_error(exc) and transient_retries < MAX_TRANSIENT_RETRIES:
+                            # scanner not ready yet (busy / warming up / waking) — not a bad sheet
+                            transient_retries += 1
+                            logger.info(
+                                "Scanner not ready (%s) — retry %d/%d in %ss",
+                                exc, transient_retries, MAX_TRANSIENT_RETRIES, ADF_POLL_INTERVAL,
+                            )
+                            time.sleep(ADF_POLL_INTERVAL)
+                            continue
                         if not _is_adf_empty_error(exc):
                             # Real scan error — post a flagged result and count it
                             logger.warning("Scan error: %s", exc)
@@ -394,6 +498,19 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
                                 send_arduino_command(ser, "BEEP_CANCEL_FAILURES")
                             STATE.waiting_for_paper = False
                             break
+                        # ADF empty right after a feed: the sheet is probably
+                        # sitting just short of the scanner rollers — nudge it in
+                        if ser is not None and nudges < len(HANDOFF_NUDGE_TAPS):
+                            taps = HANDOFF_NUDGE_TAPS[nudges]
+                            nudges += 1
+                            logger.info(
+                                "ADF empty after SHEET_FED — pushing sheet into scanner "
+                                "(%d taps, try %d/%d).",
+                                taps, nudges, len(HANDOFF_NUDGE_TAPS),
+                            )
+                            push_sheet_into_scanner(ser, taps)
+                            time.sleep(HANDOFF_NUDGE_SETTLE)
+                            continue
                         # ADF empty — wait for the user to insert the next paper
                         if time.time() >= wait_deadline:
                             logger.info(
