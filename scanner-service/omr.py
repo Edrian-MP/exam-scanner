@@ -1964,10 +1964,10 @@ def read_answer_grid(
             if max_item is None or item_num <= max_item:
                 flags.append(f"NO_ANSWER_Q{item_num}")
         elif second_ratio >= ANSWER_SECOND_MARK_RATIO:
+            # Two bubbles shaded: the item is simply wrong (no answer letter, so
+            # grade() gives it no point). It is not flagged for review.
             answer = None
             reason = "double_mark"
-            if max_item is None or item_num <= max_item:
-                flags.append(f"DOUBLE_MARK_Q{item_num}")
         elif gap < ANSWER_MIN_GAP:
             answer = None
             reason = "ambiguous"

@@ -901,7 +901,7 @@ class TemplateRegistrationTests(unittest.TestCase):
         self.assertLess(empty_ratio, 0.10)
         self.assertGreater(filled_ratio, 0.35)
 
-    def test_answer_double_mark_is_flagged_even_with_darker_winner(self):
+    def test_answer_double_mark_is_wrong_not_flagged_even_with_darker_winner(self):
         blank = np.zeros((omr.CANON_H, omr.CANON_W), dtype=np.uint8)
         live = np.zeros((omr.CANON_H, omr.CANON_W), dtype=np.uint8)
         grid = omr.ANSWER_GRID_LEFT
@@ -914,8 +914,10 @@ class TemplateRegistrationTests(unittest.TestCase):
 
         answers = omr.read_answer_grid(live, grid, 1, flags, max_item=1, blank_reference=blank)
 
+        # no answer letter, so it scores as wrong, but the sheet isn't flagged
         self.assertIsNone(answers[0])
-        self.assertIn("DOUBLE_MARK_Q1", flags)
+        self.assertNotIn("DOUBLE_MARK_Q1", flags)
+        self.assertEqual(omr.grade(answers, ["A"]), (0, 1))
 
     def test_light_but_dominant_answer_is_accepted(self):
         blank = np.zeros((omr.CANON_H, omr.CANON_W), dtype=np.uint8)
