@@ -53,6 +53,23 @@ ANSWER_MIN_RATIO          = 0.20
 ANSWER_MIN_GAP            = 0.06
 ANSWER_LOW_CONFIDENCE_GAP = 0.10
 ANSWER_SECOND_MARK_RATIO  = 0.25
+
+# Bubble reading (local alignment + inner-disk measurement, see
+# align_section_to_template / bubble_mark_ratio). On 14 real scans a pencil fill
+# measured 0.82-1.0 and an empty bubble at most 0.22 (answers) / 0.07 (digits),
+# so 0.50 sits well clear of both and still accepts lightly shaded bubbles.
+ANSWER_MARK_RATIO   = 0.50   # >= counts as shaded; two shaded = double mark
+DIGIT_MARK_RATIO    = 0.50
+MARK_CLEAR_GAP      = 0.35   # best - second below this is flagged low confidence
+MARK_INNER_RADIUS   = 0.70   # measure only the inner 70% of the bubble, away from the printed outline
+MARK_BLANK_DILATE_PX = 5     # widen the template's printed glyph before subtracting it (scans print bolder)
+MARK_NUDGE_FRACTION = 0.15   # nudge the sample by up to 15% of the radius: a fill stays dark, an outline doesn't
+ALIGN_SECTION_SEARCH_PX = 60
+ALIGN_UNIT_SEARCH_PX    = 14
+ALIGN_MIN_MATCH         = 0.25  # template-match score for a row/column to be trusted
+ALIGN_MAX_DEVIATION_PX  = 6
+ALIGN_BUBBLE_SEARCH_PX  = 10    # final per-bubble snap onto its printed outline
+ALIGN_BUBBLE_MIN_MATCH  = 0.55
 PHASE_CORR_MIN_RESPONSE   = 0.15
 PHASE_CORR_MAX_SHIFT      = 25.0
 PAGE_MIN_ANCHOR_INLIERS   = 6
@@ -1716,6 +1733,11 @@ def warp_to_canvas(pil_image: "Image.Image", binary: "np.ndarray") -> "np.ndarra
 
 
 def _bubble_center(grid: dict[str, Any], col: int, row: int) -> tuple[int, int]:
+    cells = grid.get("cell_centers")
+    if cells is not None:
+        # per-bubble live centres from align_section_to_template
+        cx, cy = cells[col][row]
+        return int(round(cx)), int(round(cy))
     if "x_centers" in grid:
         cx = int(round(grid["x_centers"][col]))
         oy = grid["y_origin"]
@@ -1817,6 +1839,221 @@ def blank_corrected_fill_ratio(
     return filled / total
 
 
+def bubble_mark_ratio(
+    warped: "np.ndarray",
+    blank_reference: "np.ndarray | None",
+    cx: int,
+    cy: int,
+    radius: int,
+    template_cx: int | None = None,
+    template_cy: int | None = None,
+) -> float:
+    """
+    How much of the bubble's interior is pencil, robust to small misalignment.
+
+    Only the inner MARK_INNER_RADIUS of the bubble is measured (the printed
+    outline sits outside it), the blank template's ink (letter / digit glyph) is
+    subtracted, and the sample is nudged by up to MARK_NUDGE_FRACTION of the radius,
+    keeping the lowest reading: a real fill stays dark wherever it is sampled,
+    while a slightly misaligned outline or glyph only reads dark at some offsets.
+    """
+    if blank_reference is None:
+        return _bubble_fill_ratio(warped, cx, cy, radius)
+
+    tcx = cx if template_cx is None else template_cx
+    tcy = cy if template_cy is None else template_cy
+    ri = max(3, int(round(radius * MARK_INNER_RADIUS)))
+    blank_crop = cv2.dilate(
+        _padded_bool_patch(blank_reference, tcx, tcy, ri).astype("uint8"),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (MARK_BLANK_DILATE_PX, MARK_BLANK_DILATE_PX)),
+        iterations=1,
+    ) > 0
+    yy, xx = np.ogrid[:ri * 2 + 1, :ri * 2 + 1]
+    mask = ((xx - ri) ** 2 + (yy - ri) ** 2 <= ri ** 2) & ~blank_crop
+    total = int(np.sum(mask))
+    if total == 0:
+        return 0.0
+
+    nudge = max(1, int(round(radius * MARK_NUDGE_FRACTION)))
+    big = _padded_bool_patch(warped, cx, cy, ri + nudge)
+    size = ri * 2 + 1
+    lowest = 1.0
+    for oy in range(0, 2 * nudge + 1):
+        for ox in range(0, 2 * nudge + 1):
+            filled = int(np.sum(big[oy:oy + size, ox:ox + size] & mask))
+            lowest = min(lowest, filled / total)
+            if lowest == 0.0:
+                return 0.0
+    return lowest
+
+
+def _match_shift(
+    live: "np.ndarray",
+    blank: "np.ndarray",
+    box: tuple[int, int, int, int],
+    search: int,
+    base: tuple[int, int] = (0, 0),
+) -> tuple[int, int, float]:
+    """Shift (dx, dy) that best lines up blank[box] with the live scan, searched around base."""
+    x1, y1, x2, y2 = box
+    h, w = live.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(blank.shape[1], x2), min(blank.shape[0], y2)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return base[0], base[1], 0.0
+    tmpl = blank[y1:y2, x1:x2].astype(np.float32)
+    bx, by = base
+    sx1, sy1 = x1 + bx - search, y1 + by - search
+    sx2, sy2 = x2 + bx + search, y2 + by + search
+    pad = max(0, -sx1, -sy1, sx2 - w, sy2 - h)
+    src = cv2.copyMakeBorder(live, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0) if pad else live
+    region = src[sy1 + pad:sy2 + pad, sx1 + pad:sx2 + pad].astype(np.float32)
+    if float(tmpl.std()) == 0.0 or float(region.std()) == 0.0:
+        return bx, by, 0.0
+    res = cv2.matchTemplate(region, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, score, _, loc = cv2.minMaxLoc(res)
+    return bx + loc[0] - search, by + loc[1] - search, float(score)
+
+
+def _align_units(
+    live: "np.ndarray",
+    blank: "np.ndarray",
+    boxes: list[tuple[int, int, int, int]],
+    section_shift: tuple[int, int],
+) -> tuple["np.ndarray", list[float]]:
+    """
+    Line up each unit (a row or column of bubbles) with the blank template.
+
+    The sheet's distortion changes smoothly across a section, so each unit is
+    searched around the previous unit's shift plus the running trend, from both
+    ends; weak or outlying matches are replaced by a straight-line fit.
+    Returns the per-unit (dx, dy) and the per-unit match scores.
+    """
+    n = len(boxes)
+
+    def track(order: range) -> dict[int, tuple[int, int, float]]:
+        found: dict[int, tuple[int, int, float]] = {}
+        prev: "np.ndarray | None" = None
+        trend = np.zeros(2)
+        for k in order:
+            if prev is None:
+                base, search = section_shift, ALIGN_UNIT_SEARCH_PX + 10
+            else:
+                base = (int(round(prev[0] + trend[0])), int(round(prev[1] + trend[1])))
+                search = ALIGN_UNIT_SEARCH_PX
+            dx, dy, score = _match_shift(live, blank, boxes[k], search, base)
+            here = np.array([dx, dy], dtype=float)
+            if prev is not None and score >= ALIGN_MIN_MATCH:
+                trend = 0.5 * trend + 0.5 * (here - prev)
+            if score >= ALIGN_MIN_MATCH or prev is None:
+                prev = here
+            else:
+                prev = prev + trend
+            found[k] = (dx, dy, score)
+        return found
+
+    forward = track(range(n))
+    backward = track(range(n - 1, -1, -1))
+    picks = [forward[k] if forward[k][2] >= backward[k][2] else backward[k] for k in range(n)]
+    shifts = np.array([[p[0], p[1]] for p in picks], dtype=float)
+    scores = [float(p[2]) for p in picks]
+
+    good = np.array([s >= ALIGN_MIN_MATCH for s in scores])
+    if good.sum() >= 3:
+        idx = np.arange(n, dtype=float)
+        fit = np.zeros_like(shifts)
+        for d in range(2):
+            coeffs = np.polyfit(idx[good], shifts[good, d], 1)
+            fit[:, d] = np.polyval(coeffs, idx)
+        for k in range(n):
+            if not good[k] or np.max(np.abs(shifts[k] - fit[k])) > ALIGN_MAX_DEVIATION_PX:
+                shifts[k] = fit[k]
+    return shifts, scores
+
+
+def align_section_to_template(
+    scan: "np.ndarray",
+    blank_reference: "np.ndarray",
+    template_grid: dict[str, Any],
+    section_name: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Find where every bubble of a section actually is on the scan.
+
+    The whole section is matched against the blank template first, then each
+    row (and, for the digit grids, each column) is matched on its own, so
+    uneven feeding / stretching of the paper is followed bubble row by row.
+    Returns a grid whose "cell_centers" give each bubble's live centre (template
+    centres stay in template_x/y_centers for blank subtraction) and alignment
+    diagnostics. meta["ok"] is False when too few rows matched to trust it.
+    """
+    xs = [float(v) for v in template_grid["x_centers"]]
+    ys = [float(v) for v in template_grid["y_centers"]]
+    r = int(template_grid["bubble_radius"])
+    m = r + 10
+    section_box = (int(xs[0]) - r - 12, int(ys[0]) - r - 12, int(xs[-1]) + r + 12, int(ys[-1]) + r + 12)
+    sdx, sdy, section_score = _match_shift(scan, blank_reference, section_box, ALIGN_SECTION_SEARCH_PX)
+
+    row_boxes = [(int(xs[0]) - m, int(y) - m, int(xs[-1]) + m, int(y) + m) for y in ys]
+    row_shifts, row_scores = _align_units(scan, blank_reference, row_boxes, (sdx, sdy))
+    scores = list(row_scores)
+    if section_name.startswith("answers"):
+        cells = [[[x + row_shifts[i][0], y + row_shifts[i][1]] for i, y in enumerate(ys)] for x in xs]
+    else:
+        # digit grids are tall: x offset per column, y offset per row
+        col_boxes = [(int(x) - m, int(ys[0]) - m, int(x) + m, int(ys[-1]) + m) for x in xs]
+        col_shifts, col_scores = _align_units(scan, blank_reference, col_boxes, (sdx, sdy))
+        scores += col_scores
+        # Each bubble: its column's shift plus how its row differs from the
+        # average row (and vice versa), so a slightly sheared / rotated sheet
+        # is followed in both directions.
+        row_mean = row_shifts.mean(axis=0)
+        col_mean = col_shifts.mean(axis=0)
+        cells = [
+            [
+                [
+                    x + col_shifts[c][0] + (row_shifts[i][0] - row_mean[0]),
+                    y + row_shifts[i][1] + (col_shifts[c][1] - col_mean[1]),
+                ]
+                for i, y in enumerate(ys)
+            ]
+            for c, x in enumerate(xs)
+        ]
+
+    # Final per-bubble snap: line each bubble up with its own printed outline.
+    # An empty bubble matches the template closely; a filled one doesn't, and
+    # keeps the row/column estimate (a fill reads dark anywhere near it anyway).
+    pad = r + 6
+    snapped = 0
+    for c, x in enumerate(xs):
+        for i, y in enumerate(ys):
+            ex, ey = cells[c][i]
+            base = (int(round(ex - x)), int(round(ey - y)))
+            box = (int(x) - pad, int(y) - pad, int(x) + pad + 1, int(y) + pad + 1)
+            dx, dy, score = _match_shift(scan, blank_reference, box, ALIGN_BUBBLE_SEARCH_PX, base)
+            if score >= ALIGN_BUBBLE_MIN_MATCH:
+                cells[c][i] = [x + dx, y + dy]
+                snapped += 1
+
+    grid = dict(template_grid)
+    grid["cell_centers"] = cells
+    grid["template_x_centers"] = xs
+    grid["template_y_centers"] = ys
+    matched = sum(1 for s in scores if s >= ALIGN_MIN_MATCH)
+    meta = {
+        "section": section_name,
+        "method": "local_template_alignment",
+        "section_shift": [int(sdx), int(sdy)],
+        "section_match": round(float(section_score), 3),
+        "unit_matches": [round(s, 3) for s in scores],
+        "units_matched": matched,
+        "units_total": len(scores),
+        "bubbles_snapped": snapped,
+        "ok": matched >= max(3, int(0.6 * len(scores))),
+    }
+    return grid, meta
+
+
 def read_digit_grid(
     warped: "np.ndarray",
     grid: dict[str, Any],
@@ -1838,7 +2075,7 @@ def read_digit_grid(
         for row in range(rows):
             cx, cy = _bubble_center(grid, col, row)
             tx, ty = _template_bubble_center(grid, col, row)
-            ratio = blank_corrected_fill_ratio(
+            ratio = bubble_mark_ratio(
                 warped,
                 blank_reference,
                 cx,
@@ -1853,24 +2090,22 @@ def read_digit_grid(
         best_digit, best_ratio, best_center, best_template_center = ranked[0]
         second_digit, second_ratio, _, _ = ranked[1] if len(ranked) > 1 else (None, 0.0, (0, 0), (0, 0))
         gap = best_ratio - second_ratio
-        accepted = best_ratio >= DIGIT_MIN_RATIO and gap >= DIGIT_LOW_CONFIDENCE_GAP
-        low_confidence = accepted and gap < DIGIT_MIN_GAP
+        accepted = False
+        low_confidence = False
         reason = "accepted"
 
-        if best_ratio < DIGIT_MIN_RATIO:
-            accepted = False
+        if best_ratio < DIGIT_MARK_RATIO:
             reason = "below_min_ratio"
-        elif second_ratio >= DIGIT_SECOND_MARK_RATIO:
-            accepted = False
+        elif second_ratio >= DIGIT_MARK_RATIO:
+            # two digits shaded in one column: the code can't be trusted
             reason = "double_mark"
             flags.append(f"DOUBLE_MARK_{flag_prefix}_COL_{col + 1}")
-        elif gap < DIGIT_LOW_CONFIDENCE_GAP:
-            accepted = False
-            reason = "ambiguous"
-        elif low_confidence:
-            flag = f"LOW_CONFIDENCE_{flag_prefix}_COL_{col + 1}"
-            flags.append(flag)
-            reason = "low_confidence"
+        else:
+            accepted = True
+            if gap < MARK_CLEAR_GAP:
+                low_confidence = True
+                flags.append(f"LOW_CONFIDENCE_{flag_prefix}_COL_{col + 1}")
+                reason = "low_confidence"
 
         selected_digit = best_digit if accepted else None
         result.append(selected_digit)
@@ -1911,7 +2146,7 @@ def read_digit_grid(
                     "above_fill_threshold": ratio > FILL_THRESHOLD,
                     "best_candidate": is_best,
                     "filled": accepted and is_best,
-                    "ratio_method": "blank_corrected" if blank_reference is not None else "raw",
+                    "ratio_method": "inner_nudged_blank_corrected" if blank_reference is not None else "raw",
                 })
 
     return result
@@ -1938,7 +2173,7 @@ def read_answer_grid(
         for col in range(4):
             cx, cy = _bubble_center(grid, col, row)
             tx, ty = _template_bubble_center(grid, col, row)
-            ratio = blank_corrected_fill_ratio(
+            ratio = bubble_mark_ratio(
                 warped,
                 blank_reference,
                 cx,
@@ -1958,25 +2193,20 @@ def read_answer_grid(
         low_conf = False
         reason = "accepted"
 
-        if best_ratio < ANSWER_MIN_RATIO:
+        if best_ratio < ANSWER_MARK_RATIO:
             answer = None
             reason = "below_min_ratio"
             if max_item is None or item_num <= max_item:
                 flags.append(f"NO_ANSWER_Q{item_num}")
-        elif second_ratio >= ANSWER_SECOND_MARK_RATIO:
+        elif second_ratio >= ANSWER_MARK_RATIO:
             # Two bubbles shaded: the item is simply wrong (no answer letter, so
             # grade() gives it no point). It is not flagged for review.
             answer = None
             reason = "double_mark"
-        elif gap < ANSWER_MIN_GAP:
-            answer = None
-            reason = "ambiguous"
-            if max_item is None or item_num <= max_item:
-                flags.append(f"LOW_CONFIDENCE_ANSWER_Q{item_num}")
         else:
             accepted = True
             answer = ANSWER_LETTERS[best_col]
-            low_conf = gap < ANSWER_LOW_CONFIDENCE_GAP
+            low_conf = gap < MARK_CLEAR_GAP
             if low_conf and (max_item is None or item_num <= max_item):
                 flags.append(f"LOW_CONFIDENCE_ANSWER_Q{item_num}")
                 reason = "low_confidence"
@@ -2002,7 +2232,7 @@ def read_answer_grid(
                     "second_ratio": round(second_ratio, 4) if is_winner else None,
                     "low_confidence": low_conf if is_winner else None,
                     "decision_reason": reason if is_winner else None,
-                    "ratio_method": "blank_corrected" if blank_reference is not None else "raw",
+                    "ratio_method": "inner_nudged_blank_corrected" if blank_reference is not None else "raw",
                 })
 
     return answers
@@ -3248,12 +3478,20 @@ def process_sheet(
     resolved_grids: dict[str, dict[str, Any]] = {}
 
     def _resolve_section(section_name: str) -> dict[str, Any] | None:
+        # Primary: line every bubble row/column up with the blank template
+        # (follows uneven feeding and stretching of the paper).
+        aligned, align_meta = align_section_to_template(
+            scan,
+            blank_reference,
+            _profile_section_grid(profile, section_name),
+            section_name,
+        )
+        # The older contour-lattice registration is kept as a diagnostic and as
+        # the fallback when the template alignment can't be trusted.
         try:
-            grid, meta = register_section(scan, section_name, profile, blank_reference)
+            lattice_grid, meta = register_section(scan, section_name, profile, blank_reference)
         except SectionRegistrationError as exc:
-            failure_flag = str(SECTION_SPECS[section_name]["failure_flag"])
-            if failure_flag not in flags:
-                flags.append(failure_flag)
+            lattice_grid = None
             meta = {
                 "section": section_name,
                 "method": "template_match_live_lattice",
@@ -3261,6 +3499,22 @@ def process_sheet(
                 "accepted": False,
                 "error": str(exc),
             }
+        meta = dict(meta)
+        meta["lattice_status"] = meta.get("status")
+        meta["local_alignment"] = align_meta
+
+        if align_meta["ok"]:
+            grid = aligned
+            meta["status"] = "ok"
+            meta["method"] = "local_template_alignment"
+        elif lattice_grid is not None:
+            grid = lattice_grid
+            meta["method"] = "template_match_live_lattice"
+        else:
+            failure_flag = str(SECTION_SPECS[section_name]["failure_flag"])
+            if failure_flag not in flags:
+                flags.append(failure_flag)
+            meta["status"] = "failed"
             section_registration[section_name] = meta
             return None
 

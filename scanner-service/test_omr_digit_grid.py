@@ -107,8 +107,9 @@ class DigitGridReaderTests(unittest.TestCase):
             flag_prefix="EXAM_CODE",
         )
 
+        # two small dots are not shading: the column has no mark, so it's rejected
         self.assertEqual(digits, [None])
-        self.assertEqual(decisions[0]["reason"], "ambiguous")
+        self.assertEqual(decisions[0]["reason"], "below_min_ratio")
 
     def test_double_marked_digit_column_is_rejected(self):
         grid = dict(TEST_GRID, x_centers=[60], cols=1)
