@@ -3,8 +3,8 @@ import { useState } from 'react'
 function LoginPage({ apiBase, onLogin, onSignUp, busy, error }) {
   const [mode, setMode] = useState('login')
   const [fullName, setFullName] = useState('')
-  const [email, setEmail] = useState('educator@example.com')
-  const [password, setPassword] = useState('password123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [localError, setLocalError] = useState('')
 
@@ -102,11 +102,11 @@ function LoginPage({ apiBase, onLogin, onSignUp, busy, error }) {
               <input
                 type="password"
                 required
-                autoComplete="current-password"
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-                placeholder="********"
+                placeholder="Enter your password"
               />
             </label>
 
@@ -120,7 +120,7 @@ function LoginPage({ apiBase, onLogin, onSignUp, busy, error }) {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-                  placeholder="********"
+                  placeholder="Re-enter your password"
                 />
               </label>
             )}

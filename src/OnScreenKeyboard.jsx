@@ -200,54 +200,72 @@ function NumericPad({ onKey, onBackspace, onDone }) {
 export default function OnScreenKeyboard() {
   const ctx = useOSKContext()
   const containerRef = useRef(null)
+  const { enabled, visible, keyboardType, toggleOSK, hideOSK, pressKey, pressBackspace, pressEnter, activeElRef, keyboardRef } = ctx
 
   // Dismiss when tapping outside the keyboard (but not on another input)
   useEffect(() => {
-    if (!ctx?.visible) return
+    if (!visible) return
     function onPointerDown(e) {
       if (!containerRef.current) return
       if (containerRef.current.contains(e.target)) return
       const tag = e.target.tagName?.toLowerCase()
       if (tag === 'input' || tag === 'textarea') return
-      ctx.hideOSK()
+      hideOSK()
     }
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
     return () => document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-  }, [ctx?.visible, ctx?.hideOSK])
-
-  if (!ctx) return null
-
-  const { visible, keyboardType, hideOSK, pressKey, pressBackspace, pressEnter, activeElRef } = ctx
+  }, [visible, hideOSK])
 
   function handleDone() {
     const el = activeElRef.current
     hideOSK()
-    setTimeout(() => { try { el?.blur() } catch (_) {} }, 50)
+    el?.blur()
   }
 
   return (
     <div
       ref={containerRef}
-      className={`fixed bottom-0 left-0 right-0 z-[200] bg-slate-800 border-t border-slate-700 px-3 pt-3 pb-5 shadow-[0_-4px_24px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-out ${
+      className={`fixed bottom-0 left-0 right-0 z-[200] transition-transform duration-300 ease-out ${
         visible ? 'translate-y-0' : 'translate-y-full'
       }`}
-      // Prevent the keyboard panel itself from stealing focus
-      onPointerDown={(e) => e.preventDefault()}
     >
-      {keyboardType === 'numeric' ? (
-        <NumericPad
-          onKey={pressKey}
-          onBackspace={pressBackspace}
-          onDone={handleDone}
-        />
-      ) : (
-        <QwertyKeyboard
-          onKey={pressKey}
-          onBackspace={pressBackspace}
-          onEnter={pressEnter}
-          onDone={handleDone}
-        />
-      )}
+      <button
+        type="button"
+        aria-label="On-screen keyboard"
+        aria-pressed={enabled}
+        aria-controls="exam-screen-keyboard"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={toggleOSK}
+        className={`absolute bottom-full left-3 mb-3 flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-semibold shadow-sm focus-visible:ring-2 focus-visible:ring-sky-500 ${
+          enabled ? 'border-sky-500 bg-sky-700 text-white' : 'border-slate-200 bg-white text-slate-700'
+        }`}
+      >
+        <span aria-hidden="true" className="text-lg leading-none">⌨</span>
+        {enabled ? 'Keyboard on' : 'Keyboard'}
+      </button>
+      <div
+        id="exam-screen-keyboard"
+        ref={keyboardRef}
+        inert={!visible}
+        aria-hidden={!visible}
+        className="border-t border-slate-700 bg-slate-800 px-3 pt-3 pb-5 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
+        onPointerDown={(event) => event.preventDefault()}
+      >
+        {keyboardType === 'numeric' ? (
+          <NumericPad
+            onKey={pressKey}
+            onBackspace={pressBackspace}
+            onDone={handleDone}
+          />
+        ) : (
+          <QwertyKeyboard
+            onKey={pressKey}
+            onBackspace={pressBackspace}
+            onEnter={pressEnter}
+            onDone={handleDone}
+          />
+        )}
+      </div>
     </div>
   )
 }

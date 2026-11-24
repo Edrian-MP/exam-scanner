@@ -2,7 +2,6 @@
 import ScanReview from './ScanReview'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import * as XLSX from 'xlsx'
-import { useOSK } from './hooks/useOSK'
 
 const MANUAL_ANSWER_GRID_STYLE = {
   gridTemplateRows: 'repeat(5, minmax(2.75rem, auto))',
@@ -578,15 +577,9 @@ function Field({ label, hint, children, htmlFor: explicitFor }) {
   )
 }
 
-function TextInput({ className = '', onFocus: callerOnFocus, ...props }) {
-  const { onFocus: oskOnFocus } = useOSK()
-  function handleFocus(e) {
-    oskOnFocus?.(e)
-    callerOnFocus?.(e)
-  }
+function TextInput({ className = '', ...props }) {
   return (
     <input
-      onFocus={handleFocus}
       className={`w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-300 transition-all duration-150 hover:border-slate-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 ${className}`}
       {...props}
     />
@@ -2079,7 +2072,6 @@ function ExamResultsTab({ exams = [], selectedSubject = null, canScan = false, o
   const [searchQuery, setSearchQuery] = useState('')
   const [sortKey, setSortKey]         = useState('name')
   const [showMissing, setShowMissing] = useState(true)
-  const { onFocus: oskFocus }         = useOSK()
 
   const exam = useMemo(
     () => exams.find((e) => String(e.activity_id) === String(examId)) || exams[0] || null,
@@ -2190,7 +2182,6 @@ function ExamResultsTab({ exams = [], selectedSubject = null, canScan = false, o
             <input
               type="text"
               value={searchQuery}
-              onFocus={oskFocus}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search students…"
               className="h-8 min-w-[160px] flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 placeholder-slate-400 shadow-sm outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"

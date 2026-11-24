@@ -1,230 +1,185 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 const OSKContext = createContext(null)
+const textInputTypes = new Set(['text', 'search', 'tel', 'url', 'email', 'password', 'number'])
 
-// Shared native input value setter — triggers React's onChange synthetic event
-const nativeValueSetter = Object.getOwnPropertyDescriptor(
-  window.HTMLInputElement.prototype,
-  'value',
-).set
-
+// Use the native setter so React observes the input event on controlled fields.
 function applyValue(el, newValue) {
-  nativeValueSetter.call(el, newValue)
+  const prototype = el instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, newValue)
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+function isEditableField(el) {
+  const canType = el instanceof HTMLTextAreaElement
+    || (el instanceof HTMLInputElement && textInputTypes.has(el.type))
+  return canType && !el.readOnly && !el.matches(':disabled') && el.isConnected
+}
+
+function findScrollParent(el) {
+  let node = el.parentElement
+  while (node && node !== document.body) {
+    const overflowY = window.getComputedStyle(node).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+    node = node.parentElement
+  }
+  return null
+}
+
 export function OSKProvider({ children }) {
+  const [enabled, setEnabled] = useState(false)
   const [visible, setVisible] = useState(false)
   const [keyboardType, setKeyboardType] = useState('qwerty')
-  const activeElRef             = useRef(null)
-  const paddedNodeRef           = useRef(null)   // scroll container that was padded
-  const paddedNodeRestoreRef    = useRef('')     // its original paddingBottom
-  const scrollParentIsPaddedRef = useRef(false)  // whether scroll container is currently padded
-  const bodyPadRestoreRef       = useRef('')     // document.body's original paddingBottom
-  const bodyIsPaddedRef         = useRef(false)  // whether body is currently padded
-  const hideTimeoutRef          = useRef(null)   // pending hideOSK cleanup timer
+  const activeElRef = useRef(null)
+  const inputModeRef = useRef(null)
+  const keyboardRef = useRef(null)
+  const paddedNodeRef = useRef(null)
+  const layoutTimerRef = useRef(null)
 
-  function findScrollParent(el) {
-    let node = el.parentElement
-    while (node && node !== document.body) {
-      const oy = window.getComputedStyle(node).overflowY
-      if (oy === 'auto' || oy === 'scroll') return node
-      node = node.parentElement
+  const restorePadding = useCallback(() => {
+    const padded = paddedNodeRef.current
+    if (!padded) return
+    padded.node.style.paddingBottom = padded.paddingBottom
+    paddedNodeRef.current = null
+  }, [])
+
+  const releaseField = useCallback(() => {
+    const el = activeElRef.current
+    if (el) {
+      if (inputModeRef.current === null) el.removeAttribute('inputmode')
+      else el.setAttribute('inputmode', inputModeRef.current)
     }
-    return null
-  }
-
-  const showOSK = useCallback((el, type) => {
-    // Cancel any pending hideOSK cleanup so the ref isn't nulled when a new
-    // cell is tapped immediately after committing the previous one
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current)
-      hideTimeoutRef.current = null
-    }
-    activeElRef.current = el
-    setKeyboardType(type)
-    setVisible(true)
-    // After the 300ms slide-up transition, push content up so the active element
-    // is visible above the keyboard — works on every page including Login
-    setTimeout(() => {
-      try {
-        const KBD_HEIGHT = type === 'numeric' ? 258 : 232
-
-        const scrollParent = findScrollParent(el)
-
-        // Pad exactly ONE target — scroll container OR body, never both.
-        // Padding both doubles the empty space (e.g. gradebook + body = ~980px gap).
-        if (scrollParent) {
-          // Element is inside a scroll container — pad it so the last row can
-          // scroll upward. Body padding is not needed and would double the space.
-          if (!scrollParentIsPaddedRef.current) {
-            paddedNodeRef.current = scrollParent
-            paddedNodeRestoreRef.current = scrollParent.style.paddingBottom
-            scrollParentIsPaddedRef.current = true
-          }
-          scrollParent.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
-        } else {
-          // No scroll container (Login, AccountSettings, subject edit, etc.) —
-          // pad body so window.scrollBy can push content above the keyboard.
-          if (!bodyIsPaddedRef.current) {
-            bodyPadRestoreRef.current = document.body.style.paddingBottom
-            bodyIsPaddedRef.current = true
-          }
-          document.body.style.paddingBottom = (KBD_HEIGHT + 200) + 'px'
-        }
-
-        // Only scroll when the field is actually blocked by the keyboard.
-        // If it's already visible above the keyboard, leave it in place —
-        // scrolling it to a "sweet spot" when it doesn't need it pushes
-        // top cells out of view and middle cells up unnecessarily.
-        requestAnimationFrame(() => {
-          const elRect = el.getBoundingClientRect()
-          const keyboardTop = window.innerHeight - KBD_HEIGHT
-          if (elRect.bottom > keyboardTop) {
-            // Field is blocked — scroll to the sweet spot (60% of available height)
-            // so there's comfortable breathing room between the field and the keyboard.
-            const sweetBottom = keyboardTop * 0.60
-            const delta = elRect.bottom - sweetBottom
-            if (scrollParent) scrollParent.scrollBy({ top: delta, behavior: 'smooth' })
-            window.scrollBy({ top: delta, behavior: 'smooth' })
-          }
-        })
-      } catch (_) {}
-    }, 320)
+    activeElRef.current = null
+    inputModeRef.current = null
   }, [])
 
   const hideOSK = useCallback(() => {
+    clearTimeout(layoutTimerRef.current)
+    restorePadding()
+    releaseField()
     setVisible(false)
-    // Restore all padding and clear refs after the slide-down animation
-    hideTimeoutRef.current = setTimeout(() => {
-      try {
-        // Restore scroll container padding (value stored in ref, not on DOM node,
-        // so this survives React re-renders that replace the DOM element)
-        const node = paddedNodeRef.current
-        if (node) {
-          node.style.paddingBottom = paddedNodeRestoreRef.current
-          requestAnimationFrame(() => {
-            try {
-              const max = Math.max(0, node.scrollHeight - node.clientHeight)
-              if (node.scrollTop > max) node.scrollTop = max
-            } catch (_) {}
-          })
-        }
-        paddedNodeRef.current = null
-        paddedNodeRestoreRef.current = ''
-        scrollParentIsPaddedRef.current = false
+  }, [releaseField, restorePadding])
 
-        // Restore document.body padding and clamp window scroll
-        document.body.style.paddingBottom = bodyPadRestoreRef.current
-        bodyPadRestoreRef.current = ''
-        bodyIsPaddedRef.current = false
-        requestAnimationFrame(() => {
-          try {
-            const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-            if (window.scrollY > max) window.scrollTo({ top: max })
-          } catch (_) {}
-        })
-      } catch (_) {}
-      activeElRef.current = null
-      hideTimeoutRef.current = null
-    }, 350)
-  }, [])
+  const showOSK = useCallback((el) => {
+    if (!isEditableField(el)) return
 
-  // Global listener — triggers OSK for ANY input/textarea on ANY page,
-  // so LoginPage, AccountSettingsPage, and raw <input> elements need no changes.
-  const OSK_SKIP_TYPES = new Set([
-    'file', 'datetime-local', 'checkbox', 'radio',
-    'range', 'color', 'submit', 'reset', 'button', 'image', 'hidden',
-  ])
-  useEffect(() => {
-    function handleGlobalFocus(e) {
-      const el = e.target
-      if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return
-      if (el.readOnly || el.disabled) return
-      if (OSK_SKIP_TYPES.has(el.type)) return
-      const isNumeric =
-        el.type === 'number' || el.inputMode === 'numeric' || el.inputMode === 'decimal'
-      showOSK(el, isNumeric ? 'numeric' : 'qwerty')
+    if (activeElRef.current !== el) {
+      releaseField()
+      activeElRef.current = el
+      inputModeRef.current = el.getAttribute('inputmode')
+      el.setAttribute('inputmode', 'none')
     }
-    document.addEventListener('focusin', handleGlobalFocus)
-    return () => document.removeEventListener('focusin', handleGlobalFocus)
-  }, [showOSK])
+    const mode = inputModeRef.current
+    setKeyboardType(el.type === 'number' || mode === 'numeric' || mode === 'decimal' ? 'numeric' : 'qwerty')
+    setVisible(true)
+
+    clearTimeout(layoutTimerRef.current)
+    // Let the keyboard finish sliding before measuring the visible space.
+    layoutTimerRef.current = setTimeout(() => {
+      const keyboard = keyboardRef.current
+      if (!keyboard || !el.isConnected || activeElRef.current !== el) return
+      const scrollParent = findScrollParent(el)
+      const node = scrollParent ?? document.body
+      if (paddedNodeRef.current?.node !== node) {
+        restorePadding()
+        paddedNodeRef.current = { node, paddingBottom: node.style.paddingBottom }
+      }
+
+      const keyboardTop = keyboard.getBoundingClientRect().top
+      const fieldBottom = el.getBoundingClientRect().bottom
+      node.style.paddingBottom = `${Math.max(0, window.innerHeight - keyboardTop) + 200}px`
+      if (fieldBottom > keyboardTop) {
+        const delta = fieldBottom - keyboardTop * 0.6
+        if (scrollParent) scrollParent.scrollBy({ top: delta, behavior: 'smooth' })
+        window.scrollBy({ top: delta, behavior: 'smooth' })
+      }
+    }, 320)
+  }, [releaseField, restorePadding])
+
+  function toggleOSK() {
+    setEnabled(!enabled)
+    if (enabled) hideOSK()
+    else showOSK(document.activeElement)
+  }
+
+  useEffect(() => {
+    if (!enabled) return
+
+    function handleFocus(event) {
+      if (isEditableField(event.target)) showOSK(event.target)
+      else if (!keyboardRef.current?.parentElement?.contains(event.target)) hideOSK()
+    }
+
+    function handlePointer(event) {
+      // A field can still have focus after the panel is dismissed.
+      if (event.target === document.activeElement && activeElRef.current !== event.target) {
+        showOSK(event.target)
+      }
+    }
+
+    document.addEventListener('focusin', handleFocus)
+    document.addEventListener('pointerdown', handlePointer)
+    return () => {
+      document.removeEventListener('focusin', handleFocus)
+      document.removeEventListener('pointerdown', handlePointer)
+      clearTimeout(layoutTimerRef.current)
+      restorePadding()
+      releaseField()
+    }
+  }, [enabled, hideOSK, releaseField, restorePadding, showOSK])
 
   const pressKey = useCallback((char) => {
     const el = activeElRef.current
-    if (!el) return
-    // Use selectionStart/End for text inputs; fall back to append for number inputs
-    let s, e
-    try {
-      s = el.selectionStart ?? el.value.length
-      e = el.selectionEnd ?? el.value.length
-    } catch (_) {
-      s = e = el.value.length
+    if (!isEditableField(el)) return
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? el.value.length
+    applyValue(el, el.value.slice(0, start) + char + el.value.slice(end))
+    if (el.selectionStart !== null) {
+      requestAnimationFrame(() => el.setSelectionRange(start + char.length, start + char.length))
     }
-    const next = el.value.slice(0, s) + char + el.value.slice(e)
-    applyValue(el, next)
-    requestAnimationFrame(() => {
-      try { el.setSelectionRange(s + char.length, s + char.length) } catch (_) {}
-    })
   }, [])
 
   const pressBackspace = useCallback(() => {
     const el = activeElRef.current
-    if (!el) return
-    let s, e
-    try {
-      s = el.selectionStart ?? el.value.length
-      e = el.selectionEnd ?? el.value.length
-    } catch (_) {
-      s = e = el.value.length
+    if (!isEditableField(el)) return
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? el.value.length
+    const newPosition = start === end ? Math.max(0, start - 1) : start
+    applyValue(el, el.value.slice(0, newPosition) + el.value.slice(end))
+    if (el.selectionStart !== null) {
+      requestAnimationFrame(() => el.setSelectionRange(newPosition, newPosition))
     }
-    const next =
-      s === e
-        ? el.value.slice(0, Math.max(0, s - 1)) + el.value.slice(s)
-        : el.value.slice(0, s) + el.value.slice(e)
-    applyValue(el, next)
-    const newPos = s === e ? Math.max(0, s - 1) : s
-    requestAnimationFrame(() => {
-      try { el.setSelectionRange(newPos, newPos) } catch (_) {}
-    })
-  }, [])
-
-  const pressClear = useCallback(() => {
-    const el = activeElRef.current
-    if (!el) return
-    applyValue(el, '')
   }, [])
 
   const pressEnter = useCallback(() => {
     const el = activeElRef.current
     hideOSK()
-    if (!el) return
-    el.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    setTimeout(() => { try { el.blur() } catch (_) {} }, 50)
+    if (!isEditableField(el)) return
+    el.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      bubbles: true,
+      cancelable: true,
+    }))
+    el.blur()
   }, [hideOSK])
 
   return (
-    <OSKContext.Provider
-      value={{
-        visible,
-        keyboardType,
-        activeElRef,
-        showOSK,
-        hideOSK,
-        pressKey,
-        pressBackspace,
-        pressClear,
-        pressEnter,
-      }}
-    >
+    <OSKContext.Provider value={{
+      enabled,
+      visible,
+      keyboardType,
+      activeElRef,
+      keyboardRef,
+      toggleOSK,
+      hideOSK,
+      pressKey,
+      pressBackspace,
+      pressEnter,
+    }}>
       {children}
     </OSKContext.Provider>
   )
@@ -232,23 +187,4 @@ export function OSKProvider({ children }) {
 
 export function useOSKContext() {
   return useContext(OSKContext)
-}
-
-// Used by input components — auto-detects keyboard type from element attributes at focus time
-export function useOSK() {
-  const ctx = useContext(OSKContext)
-  if (!ctx) return {}
-
-  return {
-    onFocus(e) {
-      const el = e.currentTarget
-      if (el.readOnly || el.disabled) return
-      if (el.type === 'datetime-local') return
-      const isNumeric =
-        el.type === 'number' ||
-        el.inputMode === 'numeric' ||
-        el.inputMode === 'decimal'
-      ctx.showOSK(el, isNumeric ? 'numeric' : 'qwerty')
-    },
-  }
 }
