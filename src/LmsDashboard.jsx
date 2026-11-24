@@ -1688,9 +1688,28 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
     try { return sessionStorage.getItem('scanManualOpen') === '1' } catch { return false }
   })
   const scannerConnected  = Boolean(scan.scanner?.scanner?.connected)
+  const onlineScanner = scan.scanner?.transport === 'online-scanner'
+  const feederReady = !onlineScanner || Boolean(scan.scanner?.scanner?.arduino)
+  const scannerPaired = Boolean(scan.scanner?.scanner?.paired)
+  const [scannerCode, setScannerCode] = useState('')
+  const [pairingError, setPairingError] = useState('')
+  const [pairingBusy, setPairingBusy] = useState(false)
   const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'stopping' | 'review'
   const stagedSheets      = scan.stagedSheets ?? []
   const typedStudentCode  = String(scan.gradeForm?.student_code || '').trim()
+
+  async function pairScanner() {
+    if (scannerPaired && !window.confirm('Replace the scanner code? The current scanner connection will end.')) return
+    setPairingBusy(true)
+    setPairingError('')
+    try {
+      setScannerCode(await scan.onPairScanner())
+    } catch (error) {
+      setPairingError(error.message)
+    } finally {
+      setPairingBusy(false)
+    }
+  }
 
   const matchedStudent = useMemo(() => {
     if (!typedStudentCode) return null
@@ -1851,6 +1870,38 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         </span>
       </div>
 
+      {onlineScanner && (
+        <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+          <button
+            type="button"
+            onClick={pairScanner}
+            disabled={pairingBusy || Boolean(scannerCode) || scan.busy}
+            className="text-sm font-semibold text-slate-800 underline disabled:opacity-40"
+          >
+            {scannerPaired ? 'Replace scanner code' : 'Pair scanner PC'}
+          </button>
+          {pairingError && <p role="alert" className="text-xs text-rose-700">{pairingError}</p>}
+          {scannerCode && (
+            <div className="space-y-2">
+              <label className="block text-xs text-slate-700">
+                Paste this code into the scanner service on the Windows PC.
+                <input
+                  value={scannerCode}
+                  readOnly
+                  autoComplete="off"
+                  spellCheck={false}
+                  onFocus={(event) => event.target.select()}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1 font-mono text-sm"
+                />
+              </label>
+              <button type="button" onClick={() => setScannerCode('')} className="text-xs font-semibold underline">
+                Hide scanner code
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Batch scan card */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
         <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -1863,7 +1914,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         <button
           type="button"
           onClick={scan.onStartBatchScan}
-          disabled={scan.busy || !scannerConnected}
+          disabled={scan.busy || pairingBusy || !scannerConnected || !feederReady}
           className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {scan.busy ? <><SpinIcon /> Starting…</> : <><ScanIcon /> Start Batch Scan</>}
@@ -1871,7 +1922,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         <button
           type="button"
           onClick={scan.onStartSingleScan}
-          disabled={scan.busy || !scannerConnected}
+          disabled={scan.busy || pairingBusy || !scannerConnected}
           className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <ScanIcon /> Single Scan (manual feed)
@@ -1881,6 +1932,9 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         </p>
         {!scannerConnected && (
           <p className="text-xs text-amber-700">Scanner service must be running and connected.</p>
+        )}
+        {scannerConnected && !feederReady && (
+          <p className="text-xs text-amber-700">Connect the Arduino feeder to run a batch scan.</p>
         )}
       </section>
 

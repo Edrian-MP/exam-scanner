@@ -75,6 +75,32 @@ python scanner-service/main.py
 Check service status:
 `http://127.0.0.1:5001/status`
 
+### Online scanner mode
+
+Use this mode on the Windows PC connected to the Epson and Arduino. The site
+must have the PostgreSQL schema scripts installed in order (`postgres.sql`,
+`educator-sessions.sql`, then `online-scanner.sql`) and
+`EXAM_ONLINE_SCANNER=1` set on its server. For an existing site, apply just
+`online-scanner.sql` after the other two scripts are installed.
+
+1. Stop the local Python scanner service before switching modes. Confirm the
+   Windows scanner driver, Python packages (`requests`, `pywin32`, `Pillow`,
+   `opencv-python`, `pyserial`), and Arduino COM port on this PC.
+2. Sign in at [Exam Scanner](https://exam-scanner.onrender.com/), open a subject and its **Scan** tab,
+   and select **Pair scanner PC** to get the code for your educator account.
+3. From the source folder on the scanner PC, run
+   `python scanner-service/main.py --pair-online` and paste the code at the
+   prompt. On later starts use `python scanner-service/main.py --online`.
+4. Keep the scanner service running. When **Scanner ready** appears, try
+   **Single Scan (manual feed)** with one test sheet. Review the result before
+   saving. Then test **Start Batch Scan** with the Arduino attached.
+
+Online mode uses an outbound HTTPS connection to receive scan jobs and send
+back results. The scanner PC does not need XAMPP for online mode. Use the
+original local mode without flags when working with the laptop's MySQL data.
+If an upload fails, the scanner service keeps the scan JSON in its `scans`
+folder for recovery.
+
 ## 7) Verify Full Flow
 1. Backend health: `http://localhost/exam-scanner/backend/api/health`
 2. Scanner status endpoint: `http://127.0.0.1:5001/status`

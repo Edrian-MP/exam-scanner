@@ -15,7 +15,7 @@ import logging
 from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import cv2
@@ -3325,6 +3325,7 @@ def process_sheet(
     pil_image: "Image.Image",
     sheet_index: int,
     api_base: str,
+    answer_key_lookup: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> SheetResult:
     """
     Process one sheet through normalization, OMR reading, API validation, and grading.
@@ -3575,7 +3576,7 @@ def process_sheet(
         ec_digits = [None] * int(_profile_section_grid(profile, "exam_code")["cols"])
         exam_code = None
 
-    if student_code and _REQUESTS_AVAILABLE:
+    if answer_key_lookup is None and student_code and _REQUESTS_AVAILABLE:
         try:
             _requests.get(
                 f"{api_base}/lms/subjects/0/students",
@@ -3587,7 +3588,7 @@ def process_sheet(
 
     exam_data: dict[str, Any] | None = None
     if exam_code:
-        exam_data = fetch_answer_key(exam_code, api_base)
+        exam_data = answer_key_lookup(exam_code) if answer_key_lookup else fetch_answer_key(exam_code, api_base)
         if exam_data is None:
             flags.append("EXAM_CODE_NOT_FOUND")
     else:

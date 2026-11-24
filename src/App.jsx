@@ -150,6 +150,7 @@ function App() {
   const answerKeyRef = useRef(null)
   const gradeAnswersRef = useRef(null)
   const scanPollRef = useRef(null)
+  const scannerPairingVersion = useRef(0)
   const sessionEpoch = useRef(0)
   const scanSessionId = scanSession?.session_id
   const scanSessionStatus = scanSession?.status
@@ -173,7 +174,19 @@ function App() {
     normalizeItem,
   })
 
-  async function bootstrap() {
+  const restoreActiveOnlineScan = useCallback((value) => {
+    const scannerState = value?.scanner
+    const sessionId = scannerState?.active_session_id || scannerState?.review_session_id
+    if (value?.transport === 'online-scanner' && sessionId) {
+      setScanSession((previous) => previous ?? {
+        session_id: sessionId,
+        status: scannerState.stop_requested ? 'stopping' : 'scanning',
+        mode: scannerState.single ? 'single' : 'batch',
+      })
+    }
+  }, [])
+
+  const bootstrap = useCallback(async () => {
     const epoch = sessionEpoch.current
     setError('')
     try {
@@ -185,6 +198,7 @@ function App() {
       if (epoch !== sessionEpoch.current) return
       setHealth(healthRes)
       setScanner(scannerRes)
+      restoreActiveOnlineScan(scannerRes)
       setExams(examRes.data || [])
       if ((examRes.data || [])[0]) {
         const firstId = String(examRes.data[0].id)
@@ -194,7 +208,7 @@ function App() {
     } catch (err) {
       if (epoch === sessionEpoch.current) setError(err.message)
     }
-  }
+  }, [restoreActiveOnlineScan])
 
   useEffect(() => {
     const root = document.documentElement
@@ -278,7 +292,7 @@ function App() {
   useEffect(() => {
     if (!educator) return
     bootstrap()
-  }, [educator])
+  }, [educator, bootstrap])
 
   useEffect(() => {
     const total = Number(selectedGradeExam?.total_items || 0)
@@ -362,7 +376,7 @@ function App() {
 
       const [results, status] = await Promise.allSettled([
         apiGet(`/scan/session/${sid}/results`),
-        apiGet('/scanner/status'),
+        apiGet(`/scanner/status?session_id=${encodeURIComponent(sid)}`),
       ])
 
       if (!active) return
@@ -425,7 +439,7 @@ function App() {
 
     while (Date.now() <= deadline) {
       try {
-        lastStatus = await apiGet('/scanner/status')
+        lastStatus = await apiGet(`/scanner/status?session_id=${encodeURIComponent(scanSessionId)}`)
         setScanner(lastStatus)
         if (!lastStatus?.scanner?.batch_running) return true
       } catch {
@@ -435,6 +449,42 @@ function App() {
     }
 
     return lastStatus ? !lastStatus?.scanner?.batch_running : false
+  }
+
+  const onlineScannerEnabled = scanner?.transport === 'online-scanner'
+  const educatorId = educator?.id
+  useEffect(() => {
+    if (!educatorId || !onlineScannerEnabled || scanSessionStatus) return
+    let active = true
+    async function refresh() {
+      const pairingVersion = scannerPairingVersion.current
+      try {
+        const value = await apiGet('/scanner/status')
+        if (active && pairingVersion === scannerPairingVersion.current) {
+          setScanner(value)
+          restoreActiveOnlineScan(value)
+        }
+      } catch {
+        // Keep the latest known scanner status during a transient network failure.
+      }
+    }
+    const interval = setInterval(refresh, 5000)
+    return () => {
+      active = false
+      clearInterval(interval)
+    }
+  }, [educatorId, onlineScannerEnabled, restoreActiveOnlineScan, scanSessionStatus])
+
+  async function onPairScanner() {
+    const epoch = sessionEpoch.current
+    const response = await apiPost('/scanner/pair')
+    if (epoch !== sessionEpoch.current) throw new Error('Sign in to continue.')
+    scannerPairingVersion.current += 1
+    setScanner({
+      transport: 'online-scanner',
+      scanner: { paired: true, online: false, connected: false, arduino: false },
+    })
+    return response.data.token
   }
 
   async function startScanSession(mode) {
@@ -835,6 +885,7 @@ function App() {
           error,
           scanSession,
           stagedSheets,
+          onPairScanner,
           onStartBatchScan,
           onStartSingleScan,
           onStopBatchScan,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 return [
     'app_env' => getenv('APP_ENV') ?: 'dev',
     'require_educator_session' => getenv('EXAM_REQUIRE_EDUCATOR_SESSION') === '1',
+    'online_scanner' => getenv('EXAM_ONLINE_SCANNER') === '1',
     'db_driver' => getenv('DB_DRIVER') ?: 'mysql',
     'db_host' => getenv('DB_HOST') ?: '127.0.0.1',
     'db_name' => getenv('DB_NAME') ?: 'exam_scanner',

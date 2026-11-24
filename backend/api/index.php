@@ -6,6 +6,7 @@ require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/http.php';
 require __DIR__ . '/lib/educator_session.php';
 require __DIR__ . '/lib/scanner_client.php';
+require __DIR__ . '/lib/online_scanner.php';
 
 $cfg = app_config();
 
@@ -36,6 +37,9 @@ if (educator_sessions_required()) {
     }
     $publicRoute = ($method === 'POST' && in_array($path, ['/auth/login', '/auth/signup', '/auth/logout'], true))
         || ($method === 'GET' && $path === '/auth/session');
+    if (str_starts_with($path, '/scanner/device/')) {
+        online_scanner_handle_device($path, $method);
+    }
     if (!$publicRoute) {
         session_educator_id();
     }
@@ -829,6 +833,17 @@ if ($path === '/health') {
 
 if ($path === '/scanner/status') {
     ensure_method('GET');
+    if (online_scanner_enabled()) {
+        $owner = session_educator_id();
+        $sessionId = $_GET['session_id'] ?? null;
+        if ($sessionId !== null && (!is_string($sessionId) || !scan_session_owned_by($sessionId, $owner))) {
+            json_response(404, ['ok' => false, 'error' => 'Scan session not found']);
+        }
+        json_response(200, [
+            'ok' => true, 'transport' => 'online-scanner',
+            'scanner' => online_scanner_status($owner, $sessionId),
+        ]);
+    }
     $scanner = scanner_request('/status');
     $state = $scanner['data']['scanner'] ?? ['connected' => false];
     $owner = session_educator_id();
@@ -848,8 +863,16 @@ if ($path === '/scanner/status') {
     ]);
 }
 
+if ($path === '/scanner/pair' && $method === 'POST' && online_scanner_enabled()) {
+    [$status, $response] = online_scanner_pair(session_educator_id());
+    json_response($status, $response);
+}
+
 if ($path === '/scanner/scan') {
     ensure_method('POST');
+    if (online_scanner_enabled()) {
+        json_response(409, ['ok' => false, 'error' => 'Use Single Scan or Start Batch Scan for an online scanner.']);
+    }
     $payload = request_json();
     if (empty($payload['exam_id'])) {
         json_response(400, ['ok' => false, 'error' => 'exam_id is required']);
@@ -1992,10 +2015,8 @@ if (preg_match('#^/lms/subjects/(\d+)/exam-results$#', $path, $matches) && $meth
    EXAM CODE LOOKUP  (used by OMR service)
 ═══════════════════════════════════════════════════════ */
 
-if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 'GET') {
-    $code = $matches[1];
-    $owner = session_educator_id();
-
+function exam_code_data(string $code, ?int $owner): ?array
+{
     $stmt = db()->prepare(
         'SELECT a.id AS activity_id, a.title AS activity_title, a.exam_id, a.subject_id,
                 e.answer_key, e.total_items
@@ -2006,20 +2027,22 @@ if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 
     $stmt->execute([':code' => $code] + ($owner === null ? [] : [':owner' => $owner]));
     $row = $stmt->fetch();
 
-    if (!$row) {
-        json_response(404, ['ok' => false, 'error' => 'Exam code not found']);
-    }
-
-    $answerKey = parse_answers_input(strtoupper((string) ($row['answer_key'] ?? '')));
-
-    json_response(200, ['ok' => true, 'data' => [
+    return $row ? [
         'activity_id'    => (int) $row['activity_id'],
         'activity_title' => (string) $row['activity_title'],
         'exam_id'        => (int) $row['exam_id'],
-        'answer_key'     => $answerKey,
+        'answer_key'     => parse_answers_input(strtoupper((string) ($row['answer_key'] ?? ''))),
         'total_items'    => (int) $row['total_items'],
         'subject_id'     => (int) $row['subject_id'],
-    ]]);
+    ] : null;
+}
+
+if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 'GET') {
+    $data = exam_code_data($matches[1], session_educator_id());
+    if ($data === null) {
+        json_response(404, ['ok' => false, 'error' => 'Exam code not found']);
+    }
+    json_response(200, ['ok' => true, 'data' => $data]);
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2028,14 +2051,24 @@ if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 
 
 if ($path === '/scanner/batch-scan' && $method === 'POST') {
     $payload = request_json();
-    require_scan_session((string) ($payload['session_id'] ?? ''));
+    $sessionId = (string) ($payload['session_id'] ?? '');
+    require_scan_session($sessionId);
+    if (online_scanner_enabled()) {
+        [$status, $response] = online_scanner_queue(session_educator_id(), $sessionId, ($payload['single'] ?? null) === true);
+        json_response($status, $response);
+    }
     $result  = scanner_request('/batch-scan', 'POST', $payload);
     json_response($result['ok'] ?? false ? 200 : 502, $result);
 }
 
 if ($path === '/scanner/batch-stop' && $method === 'POST') {
     $payload = request_json();
-    require_scan_session((string) ($payload['session_id'] ?? ''));
+    $sessionId = (string) ($payload['session_id'] ?? '');
+    require_scan_session($sessionId);
+    if (online_scanner_enabled()) {
+        [$status, $response] = online_scanner_stop(session_educator_id(), $sessionId);
+        json_response($status, $response);
+    }
     $result = scanner_request('/batch-stop', 'POST', $payload);
     json_response($result['ok'] ?? false ? 200 : 502, $result);
 }
@@ -2061,11 +2094,8 @@ if ($path === '/scan/session/start' && $method === 'POST') {
     json_response(200, ['ok' => true, 'data' => ['session_id' => $sessionId]]);
 }
 
-if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $method === 'POST') {
-    $sessionId   = $matches[1];
-    require_scan_session($sessionId);
-    $payload     = request_json();
-
+function store_scan_sheet(string $sessionId, array $payload): void
+{
     $sheetIndex  = (int) ($payload['sheet_index'] ?? 0);
     $studentCode = isset($payload['student_code']) && $payload['student_code'] !== null
         ? (string) $payload['student_code'] : null;
@@ -2101,6 +2131,15 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $met
         ':scan_image'   => $scanImage,
     ]);
 
+}
+
+if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $method === 'POST') {
+    $sessionId = $matches[1];
+    require_scan_session($sessionId);
+    if (online_scanner_enabled()) {
+        json_response(403, ['ok' => false, 'error' => 'Only the paired scanner can upload scans.']);
+    }
+    store_scan_sheet($sessionId, request_json());
     json_response(200, ['ok' => true]);
 }
 
@@ -2184,6 +2223,9 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
     $sessionId   = $matches[1];
     require_scan_session($sessionId);
     $owner = session_educator_id();
+    if (online_scanner_enabled()) {
+        online_scanner_require_idle($owner, $sessionId);
+    }
     $payload     = request_json();
     $sheetsInput = $payload['sheets'] ?? [];
 
@@ -2286,7 +2328,11 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
 if (preg_match('#^/scan/session/([a-f0-9\-]+)$#', $path, $matches) && $method === 'DELETE') {
     $sessionId = $matches[1];
     require_scan_session($sessionId);
-    scanner_request('/batch-stop', 'POST', ['session_id' => $sessionId, 'wait' => true]);
+    if (online_scanner_enabled()) {
+        online_scanner_require_idle(session_educator_id(), $sessionId);
+    } else {
+        scanner_request('/batch-stop', 'POST', ['session_id' => $sessionId, 'wait' => true]);
+    }
 
     $del = db()->prepare('DELETE FROM scan_staging WHERE session_id = :sid');
     $del->execute([':sid' => $sessionId]);

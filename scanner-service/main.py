@@ -13,9 +13,13 @@ POST /batch-stop     → signal the running batch loop to stop
 
 from __future__ import annotations
 
+import argparse
+import getpass
 import io
 import json
 import logging
+import os
+import socket
 import threading
 import time
 from datetime import datetime
@@ -383,20 +387,23 @@ def post_sheet_to_api(session_id: str, result_dict: dict) -> None:
 
 # ── Batch scan loop ───────────────────────────────────────────────────────────
 
-def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> None:
+def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, online=None) -> None:
     """
     Background thread: feed + scan + post loop.
     Stops on: stop flag, no-paper timeout, or MAX_UNREADABLE consecutive failures.
     In single mode the Arduino feeder is skipped and the loop ends after one sheet.
     """
-    if pythoncom is not None:
-        pythoncom.CoInitialize()
+    ser = None
+    com_initialized = False
+    batch_reason = "stopped"
+    batch_message = "Batch stopped."
     try:
+        if pythoncom is not None and use_hardware:
+            pythoncom.CoInitialize()
+            com_initialized = True
         sheet_index     = 0
         consecutive_bad = 0
-        ser             = None
-        batch_reason    = "stopped"
-        batch_message   = "Batch stopped."
+        answer_key_lookup = None if online is None else lambda code: online.fetch_answer_key(session_id, code)
 
         if use_hardware and _SERIAL_AVAILABLE and not single:
             try:
@@ -405,6 +412,10 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
                 send_arduino_command(ser, "BEEP_START")
             except Exception as exc:
                 logger.warning("Could not open serial port %s: %s", SERIAL_PORT, exc)
+                if online is not None:
+                    batch_reason = "hardware_error"
+                    batch_message = "Could not open the Arduino feeder port."
+                    return
                 ser = None
 
         while not STATE.should_stop():
@@ -543,7 +554,7 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
 
             # 3. OMR processing
             try:
-                result = omr.process_sheet(pil_image, sheet_index, PHP_API_BASE)
+                result = omr.process_sheet(pil_image, sheet_index, PHP_API_BASE, answer_key_lookup)
                 result_dict = omr.sheet_result_to_dict(result)
                 consecutive_bad = 0 if result.status == "ok" else consecutive_bad + 1
             except Exception as exc:
@@ -567,7 +578,16 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
             debug_path.write_text(json.dumps(result_dict, indent=2), encoding="utf-8")
 
             # 5. Post to PHP API
-            post_sheet_to_api(session_id, result_dict)
+            if online is None:
+                post_sheet_to_api(session_id, result_dict)
+            else:
+                try:
+                    online.post_sheet(session_id, result_dict)
+                except Exception as exc:
+                    logger.warning("Could not upload scan; local copy saved in %s: %s", debug_path, exc)
+                    batch_reason = "upload_failed"
+                    batch_message = "Could not upload a scan. The scanner PC kept a local copy."
+                    break
 
             STATE.last_scan_at = datetime.now().isoformat()
             STATE.last_output  = str(debug_path)
@@ -588,13 +608,35 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False) -> No
 
             time.sleep(INTER_SHEET_DELAY)
 
+    except Exception:
+        logger.exception("Batch scan failed. session=%s", session_id)
+        batch_reason = "failed"
+        batch_message = "Scan failed. Check the scanner service log on the scanner PC."
     finally:
-        if ser is not None:
-            ser.close()
-        STATE.end_batch(session_id, batch_reason, batch_message)
-        logger.info("Batch scan finished. session=%s", session_id)
-        if pythoncom is not None:
-            pythoncom.CoUninitialize()
+        try:
+            if ser is not None:
+                ser.close()
+            if com_initialized:
+                pythoncom.CoUninitialize()
+        finally:
+            STATE.waiting_for_paper = False
+            STATE.end_batch(session_id, batch_reason, batch_message)
+            logger.info("Batch scan finished. session=%s", session_id)
+
+
+def start_batch(session_id: str, use_hardware: bool, single: bool, online=None) -> bool:
+    if not STATE.start_batch(session_id):
+        return False
+    worker = threading.Thread(
+        target=_batch_loop, args=(session_id, use_hardware, single, online), daemon=online is None,
+    )
+    STATE.attach_thread(worker)
+    try:
+        worker.start()
+    except Exception:
+        STATE.end_batch(session_id, "failed", "Could not start the scanner.")
+        raise
+    return True
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -689,19 +731,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "error": "session_id is required"})
                 return
 
-            if not STATE.start_batch(session_id):
-                self._send(409, {"ok": False, "error": "A batch scan is already running"})
-                return
-
             use_hw = _WIA_AVAILABLE  # serial (Arduino) is optional; WIA drives hardware mode
             single = bool(payload.get("single", False))
-            t = threading.Thread(
-                target=_batch_loop,
-                args=(session_id, use_hw, single),
-                daemon=True,
-            )
-            STATE.attach_thread(t)
-            t.start()
+            if not start_batch(session_id, use_hw, single):
+                self._send(409, {"ok": False, "error": "A batch scan is already running"})
+                return
 
             self._send(200, {"ok": True, "data": {
                 "session_id":   session_id,
@@ -740,10 +774,68 @@ class Handler(BaseHTTPRequestHandler):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+class ScannerServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def run_online(api_url: str, pairing: bool, simulate: bool) -> None:
+    from online_scanner import OnlineScanner
+
+    token_file = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "ExamScanner" / "online-scanner-token"
+    if pairing:
+        token = getpass.getpass("Scanner code from the website: ").strip()
+        client = OnlineScanner(api_url, token, simulate)
+        token_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(token_file, "w", encoding="ascii", opener=lambda name, flags: os.open(name, flags, 0o600)) as output:
+            output.write(token + "\n")
+    else:
+        token = os.environ.get("EXAM_SCANNER_DEVICE_TOKEN")
+        if not token and token_file.exists():
+            token = token_file.read_text(encoding="ascii").strip()
+        if not token:
+            raise ValueError("Run with --pair-online and paste the scanner code from the website.")
+        client = OnlineScanner(api_url, token, simulate)
+
+    def hardware_status():
+        if simulate:
+            return True, True
+        scanner_ready = _WIA_AVAILABLE and _PIL_AVAILABLE and omr._CV2_AVAILABLE
+        if not _SERIAL_AVAILABLE:
+            return scanner_ready, False
+        from serial.tools.list_ports import comports
+        return scanner_ready, any(port.device.upper() == SERIAL_PORT.upper() for port in comports())
+
+    # Bind the local scanner port too, so local and online modes cannot drive the same hardware.
+    with ScannerServer(("127.0.0.1", 0 if simulate else 5001), Handler, bind_and_activate=False) as port_guard:
+        port_guard.server_bind()
+        logger.info("Connecting scanner service to the website.")
+        client.run(STATE, hardware_status, lambda session_id, single: start_batch(session_id, not simulate, single, client))
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Exam Scanner hardware service")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--online", action="store_true", help="Connect to the paired website")
+    mode.add_argument("--pair-online", action="store_true", help="Enter a website scanner code and connect")
+    parser.add_argument("--api-url", default="https://exam-scanner.onrender.com/exam-scanner/backend/api")
+    parser.add_argument("--simulate", action="store_true", help="Simulate hardware against a loopback test server")
+    args = parser.parse_args()
+    if args.simulate and (not args.online or not os.environ.get("EXAM_SCANNER_DEVICE_TOKEN")):
+        parser.error("--simulate requires --online and a test token in EXAM_SCANNER_DEVICE_TOKEN")
+    if args.online or args.pair_online:
+        try:
+            run_online(args.api_url, args.pair_online, args.simulate)
+        except (ImportError, OSError, RuntimeError, ValueError) as error:
+            parser.exit(1, f"Scanner service could not start: {error}\n")
+        return
+
     host = "127.0.0.1"
     port = 5001
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = ScannerServer((host, port), Handler)
     logger.info("Scanner service running at http://%s:%d", host, port)
     server.serve_forever()
 
