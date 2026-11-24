@@ -28,3 +28,12 @@ scanner-service/scans/
 scanner-service/__pycache__/omr.cpython-312.pyc
 
 .claude/
+
+# Local environment and generated files
+.env
+.env.local
+.env.*.local
+node_modules/
+dist/
+__pycache__/
+*.pyc
