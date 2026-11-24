@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS subject_activities (
   exam_code CHAR(6) NULL,
   max_score INT NOT NULL DEFAULT 100,
   due_at DATETIME NULL,
+  grading_period ENUM('Q1','Q2','Q3','Q4') NULL,
   publish_status VARCHAR(16) NOT NULL DEFAULT 'draft',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_subject_activities_subject_id (subject_id),
@@ -110,7 +111,6 @@ CREATE TABLE IF NOT EXISTS subject_activities (
     ON UPDATE CASCADE
 );
 
--- Run once on existing databases: ALTER TABLE subject_activities ADD COLUMN grading_period ENUM('Q1','Q2','Q3','Q4') NULL AFTER due_at;
 CREATE TABLE IF NOT EXISTS subject_activity_scores (
   id INT AUTO_INCREMENT PRIMARY KEY,
   activity_id INT NOT NULL,

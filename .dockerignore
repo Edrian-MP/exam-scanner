@@ -15,8 +15,6 @@
 !backend/api/config.php
 !backend/api/lib/
 !backend/api/lib/**
-!backend/sql/
-!backend/sql/schema.sql
 !deploy/
 !deploy/render/
 !deploy/render/**

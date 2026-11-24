@@ -359,6 +359,7 @@ function ensure_lms_schema(): void
                 exam_code CHAR(6) NULL,
                 max_score INT NOT NULL DEFAULT 100,
                 due_at DATETIME NULL,
+                grading_period ENUM('Q1','Q2','Q3','Q4') NULL,
                 publish_status VARCHAR(16) NOT NULL DEFAULT 'draft',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_subject_activities_subject_id (subject_id),
@@ -372,6 +373,9 @@ function ensure_lms_schema(): void
                     ON UPDATE CASCADE
             )"
         );
+        if (!db()->query("SHOW COLUMNS FROM subject_activities LIKE 'grading_period'")->fetch()) {
+            db()->exec("ALTER TABLE subject_activities ADD COLUMN grading_period ENUM('Q1','Q2','Q3','Q4') NULL");
+        }
         db()->exec(
             "CREATE TABLE IF NOT EXISTS subject_announcements (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -501,12 +505,14 @@ function find_subject_or_404(int $subjectId, int $educatorId): array
     return $subject;
 }
 
-ensure_submissions_exam_title_column();
-ensure_educators_schema();
-ensure_lms_schema();
-ensure_student_code_schema();
-ensure_exam_code_column();
-ensure_scan_staging_schema();
+if (!db_is_postgres()) {
+    ensure_submissions_exam_title_column();
+    ensure_educators_schema();
+    ensure_lms_schema();
+    ensure_student_code_schema();
+    ensure_exam_code_column();
+    ensure_scan_staging_schema();
+}
 
 if ($path === '/auth/account' && $method === 'GET') {
     $educatorId = (int) ($_GET['educator_id'] ?? 0);
@@ -667,21 +673,21 @@ if ($path === '/auth/signup') {
         json_response(409, ['ok' => false, 'error' => 'An educator with this email already exists']);
     }
 
-    $insert = db()->prepare(
+    $educatorId = db_insert_id(
         'INSERT INTO educators (surname, email, password_hash, is_active)
-         VALUES (:surname, :email, :password_hash, 1)'
+         VALUES (:surname, :email, :password_hash, 1)',
+        [
+            ':surname' => $fullName,
+            ':email' => $email,
+            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+        ]
     );
-    $insert->execute([
-        ':surname' => $fullName,
-        ':email' => $email,
-        ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
-    ]);
 
     json_response(201, [
         'ok' => true,
         'data' => [
             'educator' => [
-                'id' => (int) db()->lastInsertId(),
+                'id' => $educatorId,
                 'surname' => $fullName,
                 'email' => $email,
                 'profile_photo_data' => null,
@@ -765,17 +771,19 @@ if ($path === '/scanner/scan') {
         json_response(502, ['ok' => false, 'error' => $scanResult['error'] ?? 'Scan failed']);
     }
 
-    $stmt = db()->prepare('INSERT INTO scan_jobs (exam_id, status, raw_payload) VALUES (:exam_id, :status, :raw_payload)');
-    $stmt->execute([
-        ':exam_id' => (int) $payload['exam_id'],
-        ':status' => 'completed',
-        ':raw_payload' => json_encode($scanResult['data'] ?? []),
-    ]);
+    $jobId = db_insert_id(
+        'INSERT INTO scan_jobs (exam_id, status, raw_payload) VALUES (:exam_id, :status, :raw_payload)',
+        [
+            ':exam_id' => (int) $payload['exam_id'],
+            ':status' => 'completed',
+            ':raw_payload' => json_encode($scanResult['data'] ?? []),
+        ]
+    );
 
     json_response(200, [
         'ok' => true,
         'data' => [
-            'job_id' => (int) db()->lastInsertId(),
+            'job_id' => $jobId,
             'scan' => $scanResult['data'] ?? [],
         ],
     ]);
@@ -808,14 +816,12 @@ if ($path === '/exams' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
     $storedAnswerKey = normalize_answers_for_store($keyItems);
 
-    $stmt = db()->prepare('INSERT INTO exams (title, total_items, answer_key) VALUES (:title, :total_items, :answer_key)');
-    $stmt->execute([
-        ':title' => $title,
-        ':total_items' => $totalItems,
-        ':answer_key' => $storedAnswerKey,
-    ]);
+    $examId = db_insert_id(
+        'INSERT INTO exams (title, total_items, answer_key) VALUES (:title, :total_items, :answer_key)',
+        [':title' => $title, ':total_items' => $totalItems, ':answer_key' => $storedAnswerKey]
+    );
 
-    json_response(201, ['ok' => true, 'data' => ['id' => (int) db()->lastInsertId()]]);
+    json_response(201, ['ok' => true, 'data' => ['id' => $examId]]);
 }
 
 if ($path === '/grade/submit') {
@@ -869,21 +875,22 @@ if ($path === '/grade/submit') {
     $storedAnswers = normalize_answers_for_store($answerItems);
 
     $examTitle = trim((string) ($exam['title'] ?? ''));
-    $insert = db()->prepare(
-        'INSERT INTO submissions (exam_id, exam_title, student_code, answers, score) VALUES (:exam_id, :exam_title, :student_code, :answers, :score)'
+    $submissionId = db_insert_id(
+        'INSERT INTO submissions (exam_id, exam_title, student_code, answers, score)
+         VALUES (:exam_id, :exam_title, :student_code, :answers, :score)',
+        [
+            ':exam_id' => $examId,
+            ':exam_title' => $examTitle,
+            ':student_code' => $studentCode,
+            ':answers' => $storedAnswers,
+            ':score' => $score,
+        ]
     );
-    $insert->execute([
-        ':exam_id' => $examId,
-        ':exam_title' => $examTitle,
-        ':student_code' => $studentCode,
-        ':answers' => $storedAnswers,
-        ':score' => $score,
-    ]);
 
     json_response(200, [
         'ok' => true,
         'data' => [
-            'submission_id' => (int) db()->lastInsertId(),
+            'submission_id' => $submissionId,
             'exam_id' => $examId,
             'exam_title' => $examTitle,
             'student_code' => $studentCode,
@@ -899,7 +906,7 @@ if ($path === '/lms/subjects' && $method === 'GET') {
         'SELECT s.id, s.subject_code, s.title, s.term_label, s.description, s.created_at,
                 COUNT(DISTINCT ss.student_id) AS student_count,
                 COUNT(DISTINCT a.id) AS activity_count,
-                COUNT(DISTINCT CASE WHEN a.publish_status = "published" THEN a.id END) AS published_activity_count
+                COUNT(DISTINCT CASE WHEN a.publish_status = :published THEN a.id END) AS published_activity_count
          FROM subjects s
          LEFT JOIN subject_students ss ON ss.subject_id = s.id
          LEFT JOIN subject_activities a ON a.subject_id = s.id
@@ -907,7 +914,7 @@ if ($path === '/lms/subjects' && $method === 'GET') {
          GROUP BY s.id, s.subject_code, s.title, s.term_label, s.description, s.created_at
          ORDER BY s.created_at DESC'
     );
-    $stmt->execute([':educator_id' => $educatorId]);
+    $stmt->execute([':educator_id' => $educatorId, ':published' => 'published']);
     $rows = $stmt->fetchAll();
     json_response(200, ['ok' => true, 'data' => $rows]);
 }
@@ -928,23 +935,23 @@ if ($path === '/lms/subjects' && $method === 'POST') {
         json_response(400, ['ok' => false, 'error' => 'subject_code and title are required']);
     }
 
-    $stmt = db()->prepare(
-        'INSERT INTO subjects (educator_id, subject_code, title, term_label, description)
-         VALUES (:educator_id, :subject_code, :title, :term_label, :description)'
-    );
     try {
-        $stmt->execute([
-            ':educator_id' => $educatorId,
-            ':subject_code' => $code,
-            ':title' => $title,
-            ':term_label' => $term !== '' ? $term : null,
-            ':description' => $description !== '' ? $description : null,
-        ]);
+        $subjectId = db_insert_id(
+            'INSERT INTO subjects (educator_id, subject_code, title, term_label, description)
+             VALUES (:educator_id, :subject_code, :title, :term_label, :description)',
+            [
+                ':educator_id' => $educatorId,
+                ':subject_code' => $code,
+                ':title' => $title,
+                ':term_label' => $term !== '' ? $term : null,
+                ':description' => $description !== '' ? $description : null,
+            ]
+        );
     } catch (Throwable $e) {
         json_response(409, ['ok' => false, 'error' => 'Subject code already exists for this educator']);
     }
 
-    json_response(201, ['ok' => true, 'data' => ['id' => (int) db()->lastInsertId()]]);
+    json_response(201, ['ok' => true, 'data' => ['id' => $subjectId]]);
 }
 
 if (preg_match('#^/lms/subjects/(\d+)$#', $path, $matches)) {
@@ -1045,23 +1052,25 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
                 ':email' => $email !== '' ? $email : null,
             ]);
         } else {
-            $insertStudent = db()->prepare(
+            $studentId = db_insert_id(
                 'INSERT INTO students (student_code, surname, given_name, middle_name, email)
-                 VALUES (:student_code, :surname, :given_name, :middle_name, :email)'
+                 VALUES (:student_code, :surname, :given_name, :middle_name, :email)',
+                [
+                    ':student_code' => $studentCode,
+                    ':surname' => $surname,
+                    ':given_name' => $givenName !== '' ? $givenName : null,
+                    ':middle_name' => $middleName !== '' ? $middleName : null,
+                    ':email' => $email !== '' ? $email : null,
+                ]
             );
-            $insertStudent->execute([
-                ':student_code' => $studentCode,
-                ':surname' => $surname,
-                ':given_name' => $givenName !== '' ? $givenName : null,
-                ':middle_name' => $middleName !== '' ? $middleName : null,
-                ':email' => $email !== '' ? $email : null,
-            ]);
-            $studentId = (int) db()->lastInsertId();
         }
 
         $link = db()->prepare(
-            'INSERT IGNORE INTO subject_students (subject_id, student_id)
-             VALUES (:subject_id, :student_id)'
+            db_is_postgres()
+                ? 'INSERT INTO subject_students (subject_id, student_id)
+                   VALUES (:subject_id, :student_id) ON CONFLICT (subject_id, student_id) DO NOTHING'
+                : 'INSERT IGNORE INTO subject_students (subject_id, student_id)
+                   VALUES (:subject_id, :student_id)'
         );
         $link->execute([
             ':subject_id' => $subjectId,
@@ -1212,23 +1221,21 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
             }
         }
 
-        $insert = db()->prepare(
+        $newActivityId = db_insert_id(
             'INSERT INTO subject_activities (subject_id, title, activity_type, exam_id, exam_code, max_score, due_at, grading_period, publish_status)
-             VALUES (:subject_id, :title, :activity_type, :exam_id, :exam_code, :max_score, :due_at, :grading_period, :publish_status)'
+             VALUES (:subject_id, :title, :activity_type, :exam_id, :exam_code, :max_score, :due_at, :grading_period, :publish_status)',
+            [
+                ':subject_id' => $subjectId,
+                ':title' => $title,
+                ':activity_type' => $activityType,
+                ':exam_id' => $examId,
+                ':exam_code' => $examCode,
+                ':max_score' => $maxScore,
+                ':due_at' => $dueAt !== '' ? $dueAt : null,
+                ':grading_period' => $gradingPeriod,
+                ':publish_status' => $publishStatus,
+            ]
         );
-        $insert->execute([
-            ':subject_id' => $subjectId,
-            ':title' => $title,
-            ':activity_type' => $activityType,
-            ':exam_id' => $examId,
-            ':exam_code' => $examCode,
-            ':max_score' => $maxScore,
-            ':due_at' => $dueAt !== '' ? $dueAt : null,
-            ':grading_period' => $gradingPeriod,
-            ':publish_status' => $publishStatus,
-        ]);
-
-        $newActivityId = (int) db()->lastInsertId();
         json_response(201, ['ok' => true, 'data' => ['id' => $newActivityId, 'exam_code' => $examCode]]);
     }
 }
@@ -1369,17 +1376,13 @@ if (preg_match('#^/lms/subjects/(\d+)/announcements$#', $path, $matches)) {
             json_response(400, ['ok' => false, 'error' => 'title and body are required']);
         }
 
-        $stmt = db()->prepare(
+        $announcementId = db_insert_id(
             'INSERT INTO subject_announcements (subject_id, title, body)
-             VALUES (:subject_id, :title, :body)'
+             VALUES (:subject_id, :title, :body)',
+            [':subject_id' => $subjectId, ':title' => $title, ':body' => $body]
         );
-        $stmt->execute([
-            ':subject_id' => $subjectId,
-            ':title' => $title,
-            ':body' => $body,
-        ]);
 
-        json_response(201, ['ok' => true, 'data' => ['id' => (int) db()->lastInsertId()]]);
+        json_response(201, ['ok' => true, 'data' => ['id' => $announcementId]]);
     }
 }
 
@@ -1469,10 +1472,10 @@ if (preg_match('#^/lms/subjects/(\d+)/grade-weights$#', $path, $matches)) {
         $pt  = max(0, min(100, (float) ($payload['performance_task'] ?? 0)));
         $qa  = max(0, min(100, (float) ($payload['quarterly_assessment'] ?? 0)));
 
+        $onConflict = db_is_postgres() ? 'ON CONFLICT (subject_id) DO UPDATE SET' : 'ON DUPLICATE KEY UPDATE';
         $stmt = db()->prepare(
             'INSERT INTO subject_grade_weights (subject_id, written_work_weight, performance_task_weight, quarterly_assessment_weight)
-             VALUES (:subject_id, :ww, :pt, :qa)
-             ON DUPLICATE KEY UPDATE
+             VALUES (:subject_id, :ww, :pt, :qa) ' . $onConflict . '
                written_work_weight = :ww2,
                performance_task_weight = :pt2,
                quarterly_assessment_weight = :qa2'
@@ -1511,10 +1514,11 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)/scores$#', $path, $matche
         json_response(400, ['ok' => false, 'error' => 'scores must be an array']);
     }
 
+    $onConflict = db_is_postgres() ? 'ON CONFLICT (activity_id, student_id) DO UPDATE SET' : 'ON DUPLICATE KEY UPDATE';
     $upsert = db()->prepare(
         'INSERT INTO subject_activity_scores (activity_id, student_id, score)
-         VALUES (:activity_id, :student_id, :score)
-         ON DUPLICATE KEY UPDATE score = :score2, recorded_at = CURRENT_TIMESTAMP'
+         VALUES (:activity_id, :student_id, :score) ' . $onConflict . '
+         score = :score2, recorded_at = CURRENT_TIMESTAMP'
     );
     $updated = 0;
     foreach ($scores as $entry) {
@@ -1560,13 +1564,13 @@ if (preg_match('#^/lms/subjects/(\d+)/gradebook$#', $path, $matches) && $method 
                FROM subject_activities a
                LEFT JOIN exams ex ON ex.id = a.exam_id
                WHERE a.subject_id = :subject_id
-                 AND a.publish_status = "published"';
+                 AND a.publish_status = :published';
     if ($quarterFilter !== null) {
         $actSql .= ' AND a.grading_period = :quarter';
     }
     $actSql .= ' ORDER BY COALESCE(a.due_at, a.created_at) ASC, a.id ASC';
     $publishedStmt = db()->prepare($actSql);
-    $bindAct = [':subject_id' => $subjectId];
+    $bindAct = [':subject_id' => $subjectId, ':published' => 'published'];
     if ($quarterFilter !== null) $bindAct[':quarter'] = $quarterFilter;
     $publishedStmt->execute($bindAct);
 
@@ -1802,10 +1806,10 @@ if (preg_match('#^/lms/subjects/(\d+)/exam-results$#', $path, $matches) && $meth
          FROM subject_activities a
          INNER JOIN exams ex ON ex.id = a.exam_id
          WHERE a.subject_id = :subject_id
-           AND a.activity_type = "exam"
+           AND a.activity_type = :exam_type
          ORDER BY COALESCE(a.due_at, a.created_at) DESC, a.id DESC'
     );
-    $examStmt->execute([':subject_id' => $subjectId]);
+    $examStmt->execute([':subject_id' => $subjectId, ':exam_type' => 'exam']);
     $examRows = $examStmt->fetchAll();
 
     // ── Latest submission per student/exam (later rows overwrite earlier) ─
