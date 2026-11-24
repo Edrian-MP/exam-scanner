@@ -143,6 +143,7 @@ class ScannerState:
         self.feed_attempt: int | None = None
         self._batch_thread: threading.Thread | None = None
         self._stop_flag   = threading.Event()
+        self._stop_after_sheet = threading.Event()
         self._batch_lock  = threading.Lock()
         self._batch_running = False
 
@@ -160,6 +161,12 @@ class ScannerState:
     def request_stop(self) -> None:
         self._stop_flag.set()
 
+    def request_stop_after_sheet(self) -> None:
+        self._stop_after_sheet.set()
+
+    def should_stop_after_sheet(self) -> bool:
+        return self._stop_after_sheet.is_set()
+
     def clear_stop(self) -> None:
         self._stop_flag.clear()
 
@@ -172,6 +179,7 @@ class ScannerState:
             if self._batch_running:
                 return False
             self._stop_flag.clear()
+            self._stop_after_sheet.clear()
             self._batch_running = True
             self.active_session_id = session_id
             self._batch_thread = None
@@ -192,6 +200,7 @@ class ScannerState:
             self.feed_attempt = None
             self._batch_thread = None
             self._stop_flag.clear()
+            self._stop_after_sheet.clear()
             self.last_batch_session_id = session_id
             self.last_batch_reason = reason
             self.last_batch_message = message
@@ -600,7 +609,11 @@ def push_sheet_into_scanner(ser: Any, taps: int) -> bool:
 
 # ── Post sheet result to PHP API ──────────────────────────────────────────────
 
-def post_sheet_to_api(session_id: str, result_dict: dict) -> None:
+def post_sheet_to_api(session_id: str, result_dict: dict, online=None) -> None:
+    if online is not None:
+        online.post_sheet(session_id, result_dict)
+        return
+
     if not _REQUESTS_AVAILABLE:
         logger.warning("requests not installed — cannot post sheet to API")
         return
@@ -653,7 +666,9 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
             STATE.feeder_ok = True
             send_arduino_command(ser, "BEEP_START")
 
-        while not STATE.should_stop():
+        # A temporary connection loss can finish the active handoff. New sheets
+        # require a working connection, while an explicit Stop still acts at once.
+        while not STATE.should_stop() and not STATE.should_stop_after_sheet():
             sheet_index += 1
 
             # 1. Feed one sheet (Arduino or no-op in mock mode)
@@ -754,7 +769,10 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
                                 "flag_reasons": ["SCAN_ERROR"],
                                 "scan_image":   "",
                             }
-                            post_sheet_to_api(session_id, result_dict)
+                            try:
+                                post_sheet_to_api(session_id, result_dict, online)
+                            except Exception as upload_error:
+                                logger.warning("Could not upload scanner error: %s", upload_error)
                             consecutive_bad += 1
                             if consecutive_bad >= MAX_UNREADABLE:
                                 logger.error("Too many scan errors — aborting batch.")
@@ -847,16 +865,13 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
             debug_path.write_text(json.dumps(result_dict, indent=2), encoding="utf-8")
 
             # 5. Post to PHP API
-            if online is None:
-                post_sheet_to_api(session_id, result_dict)
-            else:
-                try:
-                    online.post_sheet(session_id, result_dict)
-                except Exception as exc:
-                    logger.warning("Could not upload scan; local copy saved in %s: %s", debug_path, exc)
-                    batch_reason = "upload_failed"
-                    batch_message = "Could not upload a scan. The scanner PC kept a local copy."
-                    break
+            try:
+                post_sheet_to_api(session_id, result_dict, online)
+            except Exception as exc:
+                logger.warning("Could not upload scan; local copy saved in %s: %s", debug_path, exc)
+                batch_reason = "upload_failed"
+                batch_message = "Could not upload a scan. The scanner PC kept a local copy."
+                break
 
             STATE.last_scan_at = datetime.now().isoformat()
             STATE.last_output  = str(debug_path)
@@ -876,6 +891,10 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
                 break
 
             time.sleep(INTER_SHEET_DELAY)
+
+        if batch_reason == "stopped" and STATE.should_stop_after_sheet() and not STATE.should_stop():
+            batch_reason = "disconnected"
+            batch_message = "Website connection interrupted. Stopped before feeding another sheet."
 
     except Exception:
         logger.exception("Batch scan failed. session=%s", session_id)

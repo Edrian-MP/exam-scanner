@@ -83,8 +83,11 @@ class OnlineScanner:
                     status = response.status_code if response is not None else None
                     if status == 401:
                         raise RuntimeError("Scanner code rejected. Pair the scanner PC again.") from error
-                    if state.is_running and (status == 409 or time.monotonic() - last_poll >= STOP_AFTER_DISCONNECT_SECONDS):
-                        state.request_stop()
+                    if state.is_running:
+                        if status == 409:
+                            state.request_stop()
+                        elif time.monotonic() - last_poll >= STOP_AFTER_DISCONNECT_SECONDS:
+                            state.request_stop_after_sheet()
                     logger.warning("Scanner website connection could not be confirmed: %s", error)
                 else:
                     last_poll = time.monotonic()
