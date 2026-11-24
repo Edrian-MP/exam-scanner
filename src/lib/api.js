@@ -2,10 +2,15 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL ||
   '/exam-scanner/backend/api';
 const API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 10000);
+const EDUCATOR_SESSIONS = import.meta.env.VITE_EDUCATOR_SESSIONS === '1';
+const EDUCATOR_SESSION_ENDED = 'exam-scanner:educator-session-ended';
 
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (EDUCATOR_SESSIONS && response.status === 401 && data?.code === 'session_required') {
+      window.dispatchEvent(new Event(EDUCATOR_SESSION_ENDED));
+    }
     const message = data?.error || `Request failed with ${response.status}`;
     throw new Error(message);
   }
@@ -65,4 +70,4 @@ export async function apiPut(path, body) {
   })
 }
 
-export { API_BASE };
+export { API_BASE, EDUCATOR_SESSIONS, EDUCATOR_SESSION_ENDED };

@@ -6,12 +6,12 @@ RUN npm ci
 COPY index.html vite.config.js postcss.config.js tailwind.config.js ./
 COPY public/ public/
 COPY src/ src/
-RUN VITE_API_BASE_URL=/exam-scanner/backend/api npm run build
+RUN VITE_API_BASE_URL=/exam-scanner/backend/api VITE_EDUCATOR_SESSIONS=1 npm run build
 
 FROM php:8.4-apache-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends apache2-utils ca-certificates libpq-dev \
+    && apt-get install -y --no-install-recommends ca-certificates libpq-dev \
     && rm -rf /var/lib/apt/lists/* \
     && docker-php-ext-install pdo_pgsql \
     && a2enmod headers rewrite \

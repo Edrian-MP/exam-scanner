@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/http.php';
+require __DIR__ . '/lib/educator_session.php';
 require __DIR__ . '/lib/scanner_client.php';
 
 $cfg = app_config();
@@ -24,6 +25,21 @@ if ($base !== '/' && str_starts_with($path, $base)) {
 }
 $path = '/' . trim((string) $path, '/');
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+
+if (educator_sessions_required()) {
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    $siteOrigin = rtrim(getenv('RENDER_EXTERNAL_URL') ?: $cfg['cors_origin'], '/');
+    if (!in_array($method, ['GET', 'HEAD'], true) && (
+        ($origin !== '' && $origin !== $siteOrigin) || ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '') === 'cross-site'
+    )) {
+        json_response(403, ['ok' => false, 'error' => 'Cross-site requests are not allowed.']);
+    }
+    $publicRoute = ($method === 'POST' && in_array($path, ['/auth/login', '/auth/signup', '/auth/logout'], true))
+        || ($method === 'GET' && $path === '/auth/session');
+    if (!$publicRoute) {
+        session_educator_id();
+    }
+}
 
 function normalize_answer_token(string $token): string
 {
@@ -467,7 +483,7 @@ function map_educator_public(array $row): array
 
 function require_lms_educator_id(): int
 {
-    $educatorId = (int) ($_GET['educator_id'] ?? 0);
+    $educatorId = scoped_educator_id((int) ($_GET['educator_id'] ?? 0));
     if ($educatorId < 1) {
         json_response(400, ['ok' => false, 'error' => 'educator_id is required']);
     }
@@ -484,6 +500,38 @@ function require_lms_educator_id(): int
     }
 
     return $educatorId;
+}
+
+function exam_by_id(int $examId): ?array
+{
+    $owner = session_educator_id();
+    $sql = 'SELECT id, title, total_items, answer_key FROM exams WHERE id = :id';
+    $parameters = [':id' => $examId];
+    if ($owner !== null) {
+        $sql .= ' AND educator_id = :owner';
+        $parameters[':owner'] = $owner;
+    }
+    $stmt = db()->prepare($sql);
+    $stmt->execute($parameters);
+    return $stmt->fetch() ?: null;
+}
+
+function require_scan_session(string $sessionId): void
+{
+    $owner = session_educator_id();
+    if ($owner !== null && !scan_session_owned_by($sessionId, $owner)) {
+        json_response(404, ['ok' => false, 'error' => 'Scan session not found']);
+    }
+}
+
+function scan_session_owned_by(string $sessionId, int $owner): bool
+{
+    if ($sessionId === '') {
+        return false;
+    }
+    $stmt = db()->prepare('SELECT 1 FROM scan_sessions WHERE id = :id AND educator_id = :owner');
+    $stmt->execute([':id' => $sessionId, ':owner' => $owner]);
+    return (bool) $stmt->fetchColumn();
 }
 
 function find_subject_or_404(int $subjectId, int $educatorId): array
@@ -514,8 +562,27 @@ if (!db_is_postgres()) {
     ensure_scan_staging_schema();
 }
 
+if ($path === '/auth/session' && $method === 'GET') {
+    $educatorId = educator_sessions_required() ? educator_session_user_id() : null;
+    $educator = null;
+    if ($educatorId !== null) {
+        $stmt = db()->prepare('SELECT id, surname, email, profile_photo_data FROM educators WHERE id = :id');
+        $stmt->execute([':id' => $educatorId]);
+        $educator = $stmt->fetch();
+    }
+    json_response(200, ['ok' => true, 'data' => ['educator' => $educator ? map_educator_public($educator) : null]]);
+}
+
+if ($path === '/auth/logout' && $method === 'POST') {
+    if (educator_sessions_required()) {
+        revoke_current_educator_session();
+        write_educator_session_cookie('', time() - 3600);
+    }
+    json_response(200, ['ok' => true]);
+}
+
 if ($path === '/auth/account' && $method === 'GET') {
-    $educatorId = (int) ($_GET['educator_id'] ?? 0);
+    $educatorId = scoped_educator_id((int) ($_GET['educator_id'] ?? 0));
     if ($educatorId < 1) {
         json_response(400, ['ok' => false, 'error' => 'educator_id is required']);
     }
@@ -542,7 +609,7 @@ if ($path === '/auth/account' && $method === 'GET') {
 
 if ($path === '/auth/account' && $method === 'POST') {
     $payload = request_json();
-    $educatorId = (int) ($payload['educator_id'] ?? 0);
+    $educatorId = scoped_educator_id((int) ($payload['educator_id'] ?? 0));
     $fullName = trim((string) ($payload['surname'] ?? ''));
     $email = strtolower(trim((string) ($payload['email'] ?? '')));
     $currentPassword = (string) ($payload['current_password'] ?? '');
@@ -617,6 +684,10 @@ if ($path === '/auth/account' && $method === 'POST') {
             ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
             ':id' => $educatorId,
         ]);
+        if (educator_sessions_required()) {
+            $delete = db()->prepare('DELETE FROM educator_sessions WHERE educator_id = :id AND token_hash <> :current_token');
+            $delete->execute([':id' => $educatorId, ':current_token' => educator_session_token_hash()]);
+        }
     } else {
         $updateStmt = db()->prepare(
             'UPDATE educators
@@ -667,6 +738,8 @@ if ($path === '/auth/signup') {
         json_response(400, ['ok' => false, 'error' => 'Password must be at least 8 characters']);
     }
 
+    limit_educator_auth_attempts('signup', 20, 3600);
+
     $existsStmt = db()->prepare('SELECT id FROM educators WHERE email = :email LIMIT 1');
     $existsStmt->execute([':email' => $email]);
     if ($existsStmt->fetch()) {
@@ -682,6 +755,7 @@ if ($path === '/auth/signup') {
             ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
         ]
     );
+    create_educator_session($educatorId);
 
     json_response(201, [
         'ok' => true,
@@ -706,6 +780,8 @@ if ($path === '/auth/login') {
         json_response(400, ['ok' => false, 'error' => 'email and password are required']);
     }
 
+    limit_educator_auth_attempts('login:' . $email, 12, 600);
+
     $stmt = db()->prepare(
         'SELECT id, surname, email, password_hash, profile_photo_data, is_active
          FROM educators
@@ -723,6 +799,8 @@ if ($path === '/auth/login') {
     if (!password_verify($password, $hash)) {
         json_response(401, ['ok' => false, 'error' => 'Invalid credentials']);
     }
+
+    create_educator_session((int) $educator['id']);
 
     json_response(200, [
         'ok' => true,
@@ -752,10 +830,21 @@ if ($path === '/health') {
 if ($path === '/scanner/status') {
     ensure_method('GET');
     $scanner = scanner_request('/status');
+    $state = $scanner['data']['scanner'] ?? ['connected' => false];
+    $owner = session_educator_id();
+    if ($owner !== null) {
+        unset($state['last_output'], $state['last_scan_at']);
+        if (!scan_session_owned_by((string) ($state['active_session_id'] ?? ''), $owner)) {
+            unset($state['active_session_id'], $state['batch_running'], $state['stop_requested'], $state['waiting_for_paper']);
+        }
+        if (!scan_session_owned_by((string) ($state['last_batch_session_id'] ?? ''), $owner)) {
+            unset($state['last_batch_session_id'], $state['last_batch_reason'], $state['last_batch_message']);
+        }
+    }
     json_response(200, [
         'ok' => true,
         'transport' => 'php->python-local',
-        'scanner' => $scanner['data']['scanner'] ?? ['connected' => false],
+        'scanner' => $state,
     ]);
 }
 
@@ -764,6 +853,9 @@ if ($path === '/scanner/scan') {
     $payload = request_json();
     if (empty($payload['exam_id'])) {
         json_response(400, ['ok' => false, 'error' => 'exam_id is required']);
+    }
+    if (educator_sessions_required() && exam_by_id((int) $payload['exam_id']) === null) {
+        json_response(404, ['ok' => false, 'error' => 'Exam not found']);
     }
 
     $scanResult = scanner_request('/scan', 'POST', ['exam_id' => (int) $payload['exam_id']]);
@@ -790,8 +882,11 @@ if ($path === '/scanner/scan') {
 }
 
 if ($path === '/exams' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET') {
-    $rows = db()->query('SELECT id, title, total_items, answer_key, created_at FROM exams ORDER BY id DESC LIMIT 30')->fetchAll();
-    json_response(200, ['ok' => true, 'data' => $rows]);
+    $owner = session_educator_id();
+    $sql = 'SELECT id, title, total_items, answer_key, created_at FROM exams';
+    $stmt = db()->prepare($sql . ($owner === null ? '' : ' WHERE educator_id = :owner') . ' ORDER BY id DESC LIMIT 30');
+    $stmt->execute($owner === null ? [] : [':owner' => $owner]);
+    json_response(200, ['ok' => true, 'data' => $stmt->fetchAll()]);
 }
 
 if ($path === '/exams' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
@@ -816,10 +911,15 @@ if ($path === '/exams' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
     $storedAnswerKey = normalize_answers_for_store($keyItems);
 
-    $examId = db_insert_id(
-        'INSERT INTO exams (title, total_items, answer_key) VALUES (:title, :total_items, :answer_key)',
-        [':title' => $title, ':total_items' => $totalItems, ':answer_key' => $storedAnswerKey]
-    );
+    $owner = session_educator_id();
+    $parameters = [':title' => $title, ':total_items' => $totalItems, ':answer_key' => $storedAnswerKey];
+    if ($owner !== null) {
+        $parameters[':owner'] = $owner;
+    }
+    $sql = $owner === null
+        ? 'INSERT INTO exams (title, total_items, answer_key) VALUES (:title, :total_items, :answer_key)'
+        : 'INSERT INTO exams (title, total_items, answer_key, educator_id) VALUES (:title, :total_items, :answer_key, :owner)';
+    $examId = db_insert_id($sql, $parameters);
 
     json_response(201, ['ok' => true, 'data' => ['id' => $examId]]);
 }
@@ -836,9 +936,7 @@ if ($path === '/grade/submit') {
         json_response(400, ['ok' => false, 'error' => 'exam_id, student_code, answers are required']);
     }
 
-    $stmt = db()->prepare('SELECT id, title, total_items, answer_key FROM exams WHERE id = :id LIMIT 1');
-    $stmt->execute([':id' => $examId]);
-    $exam = $stmt->fetch();
+    $exam = exam_by_id($examId);
     if (!$exam) {
         json_response(404, ['ok' => false, 'error' => 'Exam not found']);
     }
@@ -1030,8 +1128,12 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
             json_response(400, ['ok' => false, 'error' => 'student_code and surname are required']);
         }
 
-        $findStudent = db()->prepare('SELECT id FROM students WHERE student_code = :student_code LIMIT 1');
-        $findStudent->execute([':student_code' => $studentCode]);
+        $owner = session_educator_id();
+        $studentScope = $owner === null ? [] : [':owner' => $owner];
+        $findStudent = db()->prepare(
+            'SELECT id FROM students WHERE student_code = :student_code' . ($owner === null ? '' : ' AND educator_id = :owner')
+        );
+        $findStudent->execute([':student_code' => $studentCode] + $studentScope);
         $student = $findStudent->fetch();
 
         if ($student) {
@@ -1052,16 +1154,20 @@ if (preg_match('#^/lms/subjects/(\d+)/students$#', $path, $matches)) {
                 ':email' => $email !== '' ? $email : null,
             ]);
         } else {
+            $insertStudent = $owner === null
+                ? 'INSERT INTO students (student_code, surname, given_name, middle_name, email)
+                   VALUES (:student_code, :surname, :given_name, :middle_name, :email)'
+                : 'INSERT INTO students (student_code, surname, given_name, middle_name, email, educator_id)
+                   VALUES (:student_code, :surname, :given_name, :middle_name, :email, :owner)';
             $studentId = db_insert_id(
-                'INSERT INTO students (student_code, surname, given_name, middle_name, email)
-                 VALUES (:student_code, :surname, :given_name, :middle_name, :email)',
+                $insertStudent,
                 [
                     ':student_code' => $studentCode,
                     ':surname' => $surname,
                     ':given_name' => $givenName !== '' ? $givenName : null,
                     ':middle_name' => $middleName !== '' ? $middleName : null,
                     ':email' => $email !== '' ? $email : null,
-                ]
+                ] + $studentScope
             );
         }
 
@@ -1203,9 +1309,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities$#', $path, $matches)) {
         }
 
         if ($examId > 0) {
-            $examStmt = db()->prepare('SELECT id FROM exams WHERE id = :id LIMIT 1');
-            $examStmt->execute([':id' => $examId]);
-            if (!$examStmt->fetch()) {
+            if (exam_by_id($examId) === null) {
                 json_response(404, ['ok' => false, 'error' => 'Linked exam not found']);
             }
         } else {
@@ -1295,9 +1399,7 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)$#', $path, $matches)) {
         }
 
         if ($examId > 0) {
-            $examStmt = db()->prepare('SELECT id FROM exams WHERE id = :id LIMIT 1');
-            $examStmt->execute([':id' => $examId]);
-            if (!$examStmt->fetch()) {
+            if (exam_by_id($examId) === null) {
                 json_response(404, ['ok' => false, 'error' => 'Linked exam not found']);
             }
         } else {
@@ -1521,12 +1623,21 @@ if (preg_match('#^/lms/subjects/(\d+)/activities/(\d+)/scores$#', $path, $matche
          score = :score2, recorded_at = CURRENT_TIMESTAMP'
     );
     $updated = 0;
+    $membership = educator_sessions_required()
+        ? db()->prepare('SELECT 1 FROM subject_students WHERE subject_id = :subject AND student_id = :student')
+        : null;
     foreach ($scores as $entry) {
         $studentId = (int) ($entry['student_id'] ?? 0);
         $score = isset($entry['score']) && $entry['score'] !== null && $entry['score'] !== ''
             ? (float) $entry['score']
             : null;
         if ($studentId < 1) continue;
+        if ($membership !== null) {
+            $membership->execute([':subject' => $subjectId, ':student' => $studentId]);
+            if (!$membership->fetchColumn()) {
+                continue;
+            }
+        }
         $upsert->execute([
             ':activity_id' => $activityId,
             ':student_id'  => $studentId,
@@ -1883,16 +1994,16 @@ if (preg_match('#^/lms/subjects/(\d+)/exam-results$#', $path, $matches) && $meth
 
 if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 'GET') {
     $code = $matches[1];
+    $owner = session_educator_id();
 
     $stmt = db()->prepare(
         'SELECT a.id AS activity_id, a.title AS activity_title, a.exam_id, a.subject_id,
                 e.answer_key, e.total_items
          FROM subject_activities a
          INNER JOIN exams e ON e.id = a.exam_id
-         WHERE a.exam_code = :code
-         LIMIT 1'
+         WHERE a.exam_code = :code' . ($owner === null ? '' : ' AND e.educator_id = :owner') . ' LIMIT 1'
     );
-    $stmt->execute([':code' => $code]);
+    $stmt->execute([':code' => $code] + ($owner === null ? [] : [':owner' => $owner]));
     $row = $stmt->fetch();
 
     if (!$row) {
@@ -1917,12 +2028,14 @@ if (preg_match('#^/lms/exam-code/([0-9]{6})$#', $path, $matches) && $method === 
 
 if ($path === '/scanner/batch-scan' && $method === 'POST') {
     $payload = request_json();
+    require_scan_session((string) ($payload['session_id'] ?? ''));
     $result  = scanner_request('/batch-scan', 'POST', $payload);
     json_response($result['ok'] ?? false ? 200 : 502, $result);
 }
 
 if ($path === '/scanner/batch-stop' && $method === 'POST') {
     $payload = request_json();
+    require_scan_session((string) ($payload['session_id'] ?? ''));
     $result = scanner_request('/batch-stop', 'POST', $payload);
     json_response($result['ok'] ?? false ? 200 : 502, $result);
 }
@@ -1940,11 +2053,17 @@ if ($path === '/scan/session/start' && $method === 'POST') {
         bin2hex(random_bytes(2)),
         bin2hex(random_bytes(6))
     );
+    $owner = session_educator_id();
+    if ($owner !== null) {
+        $stmt = db()->prepare('INSERT INTO scan_sessions (id, educator_id) VALUES (:id, :owner)');
+        $stmt->execute([':id' => $sessionId, ':owner' => $owner]);
+    }
     json_response(200, ['ok' => true, 'data' => ['session_id' => $sessionId]]);
 }
 
 if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $method === 'POST') {
     $sessionId   = $matches[1];
+    require_scan_session($sessionId);
     $payload     = request_json();
 
     $sheetIndex  = (int) ($payload['sheet_index'] ?? 0);
@@ -1987,6 +2106,11 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/sheet$#', $path, $matches) && $met
 
 if (preg_match('#^/scan/session/([a-f0-9\-]+)/results$#', $path, $matches) && $method === 'GET') {
     $sessionId = $matches[1];
+    require_scan_session($sessionId);
+    $owner = session_educator_id();
+    $studentScope = $owner === null ? '' : ' AND st.educator_id = :student_owner';
+    $activityScope = $owner === null ? '' :
+        ' AND EXISTS (SELECT 1 FROM subjects s WHERE s.id = a.subject_id AND s.educator_id = :activity_owner)';
 
     $stmt = db()->prepare(
         'SELECT ss.id, ss.sheet_index, ss.student_code, ss.exam_code,
@@ -1995,12 +2119,15 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/results$#', $path, $matches) && $m
                 st.surname, st.given_name, st.middle_name,
                 a.title AS activity_title
          FROM scan_staging ss
-         LEFT JOIN students st ON st.student_code = ss.student_code
-         LEFT JOIN subject_activities a ON a.exam_code = ss.exam_code
+         LEFT JOIN students st ON st.student_code = ss.student_code' . $studentScope . '
+         LEFT JOIN subject_activities a ON a.exam_code = ss.exam_code' . $activityScope . '
          WHERE ss.session_id = :session_id
          ORDER BY ss.sheet_index ASC'
     );
-    $stmt->execute([':session_id' => $sessionId]);
+    $stmt->execute([':session_id' => $sessionId] + ($owner === null ? [] : [
+        ':student_owner' => $owner,
+        ':activity_owner' => $owner,
+    ]));
     $rows = $stmt->fetchAll();
 
     $sheets = array_map(static function (array $row): array {
@@ -2055,6 +2182,8 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/results$#', $path, $matches) && $m
 
 if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $method === 'POST') {
     $sessionId   = $matches[1];
+    require_scan_session($sessionId);
+    $owner = session_educator_id();
     $payload     = request_json();
     $sheetsInput = $payload['sheets'] ?? [];
 
@@ -2089,10 +2218,9 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
             'SELECT a.exam_id, e.title AS exam_title, e.total_items, e.answer_key
              FROM subject_activities a
              INNER JOIN exams e ON e.id = a.exam_id
-             WHERE a.exam_code = :code
-             LIMIT 1'
+             WHERE a.exam_code = :code' . ($owner === null ? '' : ' AND e.educator_id = :owner') . ' LIMIT 1'
         );
-        $actStmt->execute([':code' => $examCode]);
+        $actStmt->execute([':code' => $examCode] + ($owner === null ? [] : [':owner' => $owner]));
         $examRow = $actStmt->fetch();
 
         if (!$examRow) {
@@ -2119,6 +2247,14 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
         ));
 
         try {
+            db()->beginTransaction();
+            $del = db()->prepare('DELETE FROM scan_staging WHERE id = :id AND session_id = :sid');
+            $del->execute([':id' => $id, ':sid' => $sessionId]);
+            if ($del->rowCount() !== 1) {
+                db()->rollBack();
+                $skipped++;
+                continue;
+            }
             $ins = db()->prepare(
                 'INSERT INTO submissions (exam_id, exam_title, student_code, answers, score)
                  VALUES (:exam_id, :exam_title, :student_code, :answers, :score)'
@@ -2131,10 +2267,12 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
                 ':score'        => $score,
             ]);
 
-            $del = db()->prepare('DELETE FROM scan_staging WHERE id = :id AND session_id = :sid');
-            $del->execute([':id' => $id, ':sid' => $sessionId]);
+            db()->commit();
             $committed++;
         } catch (Throwable $e) {
+            if (db()->inTransaction()) {
+                db()->rollBack();
+            }
             $skipped++;
         }
     }
@@ -2147,10 +2285,15 @@ if (preg_match('#^/scan/session/([a-f0-9\-]+)/commit$#', $path, $matches) && $me
 
 if (preg_match('#^/scan/session/([a-f0-9\-]+)$#', $path, $matches) && $method === 'DELETE') {
     $sessionId = $matches[1];
+    require_scan_session($sessionId);
     scanner_request('/batch-stop', 'POST', ['session_id' => $sessionId, 'wait' => true]);
 
     $del = db()->prepare('DELETE FROM scan_staging WHERE session_id = :sid');
     $del->execute([':sid' => $sessionId]);
+    if (educator_sessions_required()) {
+        $deleteSession = db()->prepare('DELETE FROM scan_sessions WHERE id = :id AND educator_id = :owner');
+        $deleteSession->execute([':id' => $sessionId, ':owner' => session_educator_id()]);
+    }
     json_response(200, ['ok' => true]);
 }
 

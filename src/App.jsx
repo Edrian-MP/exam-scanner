@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { API_BASE, apiDelete, apiGet, apiPost } from './lib/api'
+import { API_BASE, apiDelete, apiGet, apiPost, EDUCATOR_SESSIONS, EDUCATOR_SESSION_ENDED } from './lib/api'
 import LmsDashboard from './LmsDashboard'
 import LoginPage from './LoginPage'
 import AccountSettingsPage from './AccountSettingsPage'
@@ -128,7 +128,7 @@ function App() {
     }
   })
   const [educator, setEducator] = useState(null)
-  const [authBusy, setAuthBusy] = useState(false)
+  const [authBusy, setAuthBusy] = useState(EDUCATOR_SESSIONS)
   const [authError, setAuthError] = useState('')
   const [showAccountSettings, setShowAccountSettings] = useState(false)
   const [accountBusy, setAccountBusy] = useState(false)
@@ -150,6 +150,7 @@ function App() {
   const answerKeyRef = useRef(null)
   const gradeAnswersRef = useRef(null)
   const scanPollRef = useRef(null)
+  const sessionEpoch = useRef(0)
   const scanSessionId = scanSession?.session_id
   const scanSessionStatus = scanSession?.status
 
@@ -173,6 +174,7 @@ function App() {
   })
 
   async function bootstrap() {
+    const epoch = sessionEpoch.current
     setError('')
     try {
       const [healthRes, scannerRes, examRes] = await Promise.all([
@@ -180,6 +182,7 @@ function App() {
         apiGet('/scanner/status'),
         apiGet('/exams'),
       ])
+      if (epoch !== sessionEpoch.current) return
       setHealth(healthRes)
       setScanner(scannerRes)
       setExams(examRes.data || [])
@@ -189,7 +192,7 @@ function App() {
         setGradeForm((s) => ({ ...s, exam_id: firstId }))
       }
     } catch (err) {
-      setError(err.message)
+      if (epoch === sessionEpoch.current) setError(err.message)
     }
   }
 
@@ -211,6 +214,20 @@ function App() {
   }, [isNightMode])
 
   useEffect(() => {
+    if (EDUCATOR_SESSIONS) {
+      let active = true
+      apiGet('/auth/session')
+        .then((response) => {
+          if (active) setEducator(response?.data?.educator || null)
+        })
+        .catch((err) => {
+          if (active) setAuthError(err.message)
+        })
+        .finally(() => {
+          if (active) setAuthBusy(false)
+        })
+      return () => { active = false }
+    }
     try {
       const raw = localStorage.getItem(EDUCATOR_STORAGE_KEY)
       if (!raw) return
@@ -222,6 +239,41 @@ function App() {
       // Ignore malformed local storage data.
     }
   }, [])
+
+  const clearEducator = useCallback(() => {
+    sessionEpoch.current += 1
+    try {
+      localStorage.removeItem(EDUCATOR_STORAGE_KEY)
+    } catch {
+      // A hosted session still clears when browser storage is unavailable.
+    }
+    setEducator(null)
+    setShowAccountSettings(false)
+    setAccountError('')
+    setLastResult(null)
+    setExams([])
+    setHealth(null)
+    setScanner(null)
+    setExamForm(defaultExam)
+    setAnswerKeyItems(createEmptyItems(defaultExam.total_items))
+    setGradeForm({ exam_id: '', student_code: '' })
+    setGradeAnswerItems([])
+    setScanRequest({ exam_id: '' })
+    setScanSession(null)
+    setStagedSheets([])
+    setPdfImportStatus('')
+    setError('')
+  }, [])
+
+  useEffect(() => {
+    if (!EDUCATOR_SESSIONS) return
+    const endSession = () => {
+      clearEducator()
+      setAuthError('Your session ended. Sign in again.')
+    }
+    window.addEventListener(EDUCATOR_SESSION_ENDED, endSession)
+    return () => window.removeEventListener(EDUCATOR_SESSION_ENDED, endSession)
+  }, [clearEducator])
 
   useEffect(() => {
     if (!educator) return
@@ -587,7 +639,7 @@ function App() {
       if (!nextEducator?.id) {
         throw new Error('Invalid login response from server.')
       }
-      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      if (!EDUCATOR_SESSIONS) localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
       setEducator(nextEducator)
     } catch (err) {
       setAuthError(err.message)
@@ -605,7 +657,7 @@ function App() {
       if (!nextEducator?.id) {
         throw new Error('Invalid signup response from server.')
       }
-      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      if (!EDUCATOR_SESSIONS) localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
       setEducator(nextEducator)
     } catch (err) {
       setAuthError(err.message)
@@ -614,12 +666,13 @@ function App() {
     }
   }
 
-  function onLogout() {
-    localStorage.removeItem(EDUCATOR_STORAGE_KEY)
-    setEducator(null)
-    setShowAccountSettings(false)
-    setLastResult(null)
-    setError('')
+  async function onLogout() {
+    try {
+      if (EDUCATOR_SESSIONS) await apiPost('/auth/logout')
+      clearEducator()
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   async function onSaveAccountSettings(payload) {
@@ -635,7 +688,7 @@ function App() {
       if (!nextEducator?.id) {
         throw new Error('Invalid account update response.')
       }
-      localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
+      if (!EDUCATOR_SESSIONS) localStorage.setItem(EDUCATOR_STORAGE_KEY, JSON.stringify(nextEducator))
       setEducator(nextEducator)
       setShowAccountSettings(false)
     } catch (err) {
