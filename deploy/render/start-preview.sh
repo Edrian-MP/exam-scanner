@@ -13,7 +13,7 @@ export DB_SSLROOTCERT="${DB_SSLROOTCERT:-/opt/exam-scanner/supabase-ca.crt}"
 
 php -r 'require "/opt/exam-scanner/api/lib/db.php"; db()->query("SELECT educator_id FROM educator_sessions LIMIT 0");'
 if [ "${EXAM_ONLINE_SCANNER:-}" = 1 ]; then
-    php -r 'require "/opt/exam-scanner/api/lib/db.php"; db()->query("SELECT educator_id FROM online_scanners LIMIT 0"); db()->query("SELECT session_id FROM online_scan_jobs LIMIT 0");'
+    php -r 'require "/opt/exam-scanner/api/lib/db.php"; db()->query("SELECT educator_id FROM online_scanners LIMIT 0"); db()->query("SELECT session_id, activity, feed_attempt FROM online_scan_jobs LIMIT 0");'
 fi
 
 printf 'OK\n' > /run/exam-scanner/health

@@ -165,6 +165,7 @@ function useImportClasslist({ subjectId, educatorId, onDone }) {
 const emptySubjectForm      = { subject_code: '', title: '', term_label: '', description: '' }
 const emptyStudentForm      = { student_code: '', surname: '', given_name: '', middle_name: '', email: '' }
 const emptyActivityForm     = { title: '', activity_type: 'exam', exam_id: '', exam_code: '', max_score: '', due_at: '', grading_period: '', publish_status: 'draft' }
+const emptyAnnouncementForm = { title: '', body: '' }
 
 /* ─── utils ─────────────────────────────────────────── */
 function formatPercent(v) {
@@ -523,6 +524,11 @@ const TAB_META = {
     label: 'Activities',
     icon: <ClipboardIcon />,
     accent: { dot: 'bg-violet-500', text: 'text-violet-600', bg: 'bg-violet-50', btn: 'bg-violet-600 hover:bg-violet-700', badge: 'bg-violet-100 text-violet-700' },
+  },
+  announcements: {
+    label: 'Announcements',
+    icon: <BellIcon />,
+    accent: { dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50', btn: 'bg-amber-500 hover:bg-amber-600', badge: 'bg-amber-100 text-amber-700' },
   },
   scan: {
     label: 'Scan',
@@ -1674,6 +1680,95 @@ function ActivitiesTab({
 }
 
 /* ═══════════════════════════════════════════════════════
+   ANNOUNCEMENTS TAB
+═══════════════════════════════════════════════════════ */
+function AnnouncementsTab({
+  announcements,
+  announcementForm,
+  setAnnouncementForm,
+  busyAction,
+  editingAnnouncementId,
+  onPostAnnouncement,
+  onStartEditAnnouncement,
+  onCancelEditAnnouncement,
+  onEditAnnouncement,
+  onDeleteAnnouncement,
+}) {
+  const a = TAB_META.announcements.accent
+  return (
+    <div className="grid min-h-[520px] divide-y divide-slate-100 lg:h-[520px] lg:max-h-[520px] lg:grid-cols-[380px_1fr] lg:divide-x lg:divide-y-0">
+
+      {/* LEFT: form */}
+      <div className="flex flex-col gap-5 p-6">
+        <div>
+          <h3 className="text-base font-bold text-slate-800">{editingAnnouncementId ? 'Edit Announcement' : 'Post Announcement'}</h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {editingAnnouncementId ? 'Update your announcement and save changes.' : 'Broadcast updates, reminders, or notes to your class.'}
+          </p>
+        </div>
+
+        <form onSubmit={editingAnnouncementId ? onEditAnnouncement : onPostAnnouncement} className="flex flex-1 flex-col gap-4">
+          <Field label="Subject Line">
+            <TextInput required value={announcementForm.title}
+              onChange={(e) => setAnnouncementForm((p) => ({ ...p, title: e.target.value }))}
+              placeholder="e.g. Reminder: Exam next Monday" />
+          </Field>
+          <Field label="Message">
+            <TextareaInput required rows={6} value={announcementForm.body}
+              onChange={(e) => setAnnouncementForm((p) => ({ ...p, body: e.target.value }))}
+              placeholder="Write your announcement here…" />
+          </Field>
+          <div className="mt-auto pt-2">
+            <SubmitBtn disabled={busyAction === 'announcement' || busyAction === `edit-announcement-${editingAnnouncementId}`} colorClass={a.btn}>
+              {busyAction === 'announcement' || busyAction === `edit-announcement-${editingAnnouncementId}`
+                ? <><SpinIcon /> Saving…</>
+                : (editingAnnouncementId ? 'Save Announcement' : 'Post Announcement')}
+            </SubmitBtn>
+            {editingAnnouncementId && (
+              <GhostBtn type="button" onClick={onCancelEditAnnouncement} className="mt-2 w-full justify-center" disabled={busyAction === `edit-announcement-${editingAnnouncementId}`}>
+                <XIcon /> Cancel
+              </GhostBtn>
+            )}
+          </div>
+        </form>
+      </div>
+
+      {/* RIGHT: list */}
+      <div className="flex min-h-0 flex-col gap-4 p-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-800">Recent Announcements</h3>
+          <span className="text-xs text-slate-400">{announcements.length} posted</span>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto space-y-3 pr-1">
+          {announcements.length ? announcements.map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 transition hover:border-slate-200 hover:bg-white hover:shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                <div className="flex flex-shrink-0 items-center gap-2">
+                  <span className="text-[11px] text-slate-400">{relativeTime(item.created_at)}</span>
+                  <GhostBtn type="button" onClick={() => onStartEditAnnouncement(item)} disabled={busyAction === `edit-announcement-${item.id}`}>
+                    <PenIcon />
+                    Edit
+                  </GhostBtn>
+                  <DangerBtn type="button" onClick={() => onDeleteAnnouncement(item.id)} disabled={busyAction === `delete-announcement-${item.id}`}>
+                    {busyAction === `delete-announcement-${item.id}` ? <SpinIcon /> : <TrashIcon />}
+                    Delete
+                  </DangerBtn>
+                </div>
+              </div>
+              {item.body && <p className="mt-2 text-xs text-slate-500 leading-relaxed line-clamp-3">{item.body}</p>}
+            </div>
+          )) : (
+            <EmptyState icon={<BellIcon size="lg" />} title="No announcements yet" description="Post your first announcement to notify your class." />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
    SCAN CENTER TAB
 ═══════════════════════════════════════════════════════ */
 function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken = '', manualContext = null }) {
@@ -1742,6 +1837,21 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
     const flaggedCount = stagedSheets.filter((s) => s.status === 'flagged').length
     const lastSheet    = stagedSheets[stagedSheets.length - 1] ?? null
 
+    // live step from the scanner service (polled every 2 s while scanning)
+    const hw          = scan.scanner?.scanner ?? {}
+    const feedAttempt = Number(hw.feed_attempt) || 0
+    const feedMax     = Number(hw.feed_max_attempts) || 3
+    const isRetrying  = hw.activity === 'feeding' && feedAttempt > 1
+    let activityText  = ''
+    if (!isStopping && !isSingle) {
+      if (hw.activity === 'connecting_feeder') activityText = 'Connecting to the paper feeder...'
+      else if (isRetrying) activityText = `Sheet didn't reach the scanner. Feeding sheet, try ${feedAttempt} of ${feedMax}...`
+      else if (hw.activity === 'feeding') activityText = 'Feeding the next sheet...'
+      else if (hw.activity === 'scanning') activityText = hw.waiting_for_paper ? 'Waiting for the next sheet...' : 'Scanning sheet...'
+      else if (hw.activity === 'processing') activityText = 'Reading answers...'
+    }
+
+
     return (
       <div className="min-h-[520px] p-6 flex flex-col gap-5">
         {scan.error && (
@@ -1765,6 +1875,18 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
               </p>
             </div>
           </div>
+
+          {/* Current hardware step */}
+          {activityText && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${isRetrying ? 'scan-activity-retry border-amber-200 bg-amber-50 text-amber-800' :'border-slate-200 bg-slate-50 text-slate-700'}`}
+            >
+              <span className={`h-2 w-2 shrink-0 rounded-full animate-pulse ${isRetrying ? 'bg-amber-500' : 'bg-sky-500'}`} />
+              <span>{activityText}</span>
+            </div>
+          )}
 
           {/* Live counts */}
           <div className="flex flex-wrap gap-2">
@@ -2499,6 +2621,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [selectedSubjectId, setSelectedSubjectId] = useState('')
   const [students, setStudents]                   = useState([])
   const [activities, setActivities]               = useState([])
+  const [announcements, setAnnouncements]         = useState([])
   const [examResults, setExamResults]             = useState([])
   const [loading, setLoading]                     = useState(false)
   const [error, setError]                         = useState('')
@@ -2518,7 +2641,9 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const [editStudentForm, setEditStudentForm]     = useState(emptyStudentForm)
   const [activityForm, setActivityForm]           = useState(emptyActivityForm)
   const [activityAttachmentName, setActivityAttachmentName] = useState('')
+  const [announcementForm, setAnnouncementForm]   = useState(emptyAnnouncementForm)
   const [editingActivityId, setEditingActivityId] = useState('')
+  const [editingAnnouncementId, setEditingAnnouncementId] = useState('')
   const [activeTab, setActiveTab]                 = useState('roster')
   const [scanManualFocusToken, setScanManualFocusToken] = useState('')
   const [scanManualContext, setScanManualContext] = useState(null)
@@ -2581,7 +2706,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   }, [activities, scan.exams])
   // Build tab list dynamically
   const tabs = useMemo(() => {
-    const base = ['roster', 'activities']
+    const base = ['roster', 'activities', 'announcements']
     if (hasScanCenter) base.push('scan')
     base.push('results')
     return base
@@ -2590,9 +2715,10 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
   const tabCounts = useMemo(() => ({
     roster:        students.length,
     activities:    activities.length,
+    announcements: announcements.length,
     scan:          scanTemplates.length,
     results:       examResults.length,
-  }), [students, activities, scanTemplates.length, examResults])
+  }), [students, activities, announcements, scanTemplates.length, examResults])
 
   async function loadSubjects() {
     const res = await apiGet(withEducator('/lms/subjects'))
@@ -2601,13 +2727,15 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
 
   async function loadSubjectDetails(id) {
     if (!id) return
-    const [sR, aR, erR] = await Promise.all([
+    const [sR, aR, anR, erR] = await Promise.all([
       apiGet(withEducator(`/lms/subjects/${id}/students`)),
       apiGet(withEducator(`/lms/subjects/${id}/activities`)),
+      apiGet(withEducator(`/lms/subjects/${id}/announcements`)),
       apiGet(withEducator(`/lms/subjects/${id}/exam-results`)),
     ])
     setStudents(sR.data || [])
     setActivities(aR.data || [])
+    setAnnouncements(anR.data || [])
     setExamResults(erR.data?.exams || [])
   }
 
@@ -2630,6 +2758,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     onCancelEditSubject()
     onCancelEditStudent()
     onCancelEditActivity()
+    onCancelEditAnnouncement()
     setLoading(true)
     setError('')
     loadSubjectDetails(selectedSubjectId).catch((e) => setError(e.message)).finally(() => setLoading(false))
@@ -2716,7 +2845,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
         try {
           await apiDelete(withEducator(`/lms/subjects/${selectedSubject.id}`))
           setSelectedSubjectId('')
-          setStudents([]); setActivities([]); setExamResults([])
+          setStudents([]); setActivities([]); setAnnouncements([]); setExamResults([])
           await loadSubjects()
         } catch (err) { showToast(err.message) } finally { setBusyAction('') }
       },
@@ -2980,6 +3109,62 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
     })
   }
 
+  async function onPostAnnouncement(e) {
+    e.preventDefault()
+    if (!selectedSubjectId) return
+    setBusyAction('announcement')
+    try {
+      await apiPost(withEducator(`/lms/subjects/${selectedSubjectId}/announcements`), announcementForm)
+      setAnnouncementForm(emptyAnnouncementForm)
+      await loadSubjectDetails(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onStartEditAnnouncement(announcement) {
+    setEditingAnnouncementId(String(announcement.id))
+    setAnnouncementForm({
+      title: announcement.title || '',
+      body: announcement.body || '',
+    })
+  }
+
+  function onCancelEditAnnouncement() {
+    setEditingAnnouncementId('')
+    setAnnouncementForm(emptyAnnouncementForm)
+  }
+
+  async function onEditAnnouncement(e) {
+    if (e) e.preventDefault()
+    if (!selectedSubjectId || !editingAnnouncementId) return
+    setBusyAction(`edit-announcement-${editingAnnouncementId}`)
+    try {
+      await apiPut(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${editingAnnouncementId}`), announcementForm)
+      onCancelEditAnnouncement()
+      await loadSubjectDetails(selectedSubjectId)
+    } catch (err) { setError(err.message) } finally { setBusyAction('') }
+  }
+
+  function onDeleteAnnouncement(id) {
+    if (!selectedSubjectId) return
+    const ann = announcements.find((a) => String(a.id) === String(id))
+    setConfirmDialog({
+      title: `Delete "${ann?.title || 'this announcement'}"?`,
+      message: 'This permanently removes the announcement.',
+      confirmLabel: 'Delete Announcement',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBusyAction(`delete-announcement-${id}`)
+        try {
+          await apiDelete(withEducator(`/lms/subjects/${selectedSubjectId}/announcements/${id}`))
+          if (String(editingAnnouncementId) === String(id)) {
+            onCancelEditAnnouncement()
+          }
+          await loadSubjectDetails(selectedSubjectId)
+        } catch (err) { showToast(err.message) } finally { setBusyAction('') }
+      },
+    })
+  }
+
   function onOpenPendingActivity(row, activity) {
     if (!hasScanCenter) return
 
@@ -3217,6 +3402,18 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
                 onCancelEditActivity={onCancelEditActivity}
                 onEditActivity={onEditActivity}
                 onDeleteActivity={onDeleteActivity}
+              />
+            )}
+            {activeTab === 'announcements' && (
+              <AnnouncementsTab
+                announcements={announcements} announcementForm={announcementForm}
+                setAnnouncementForm={setAnnouncementForm} busyAction={busyAction}
+                editingAnnouncementId={editingAnnouncementId}
+                onPostAnnouncement={onPostAnnouncement}
+                onStartEditAnnouncement={onStartEditAnnouncement}
+                onCancelEditAnnouncement={onCancelEditAnnouncement}
+                onEditAnnouncement={onEditAnnouncement}
+                onDeleteAnnouncement={onDeleteAnnouncement}
               />
             )}
             {activeTab === 'scan' && hasScanCenter && (
@@ -3499,6 +3696,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
 const SZ = { sm: 'h-3.5 w-3.5', md: 'h-5 w-5', lg: 'h-6 w-6' }
 function UsersIcon({ size = 'sm' })     { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg> }
 function ClipboardIcon({ size = 'sm' }) { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg> }
+function BellIcon({ size = 'sm' })      { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg> }
 function ScanIcon({ size = 'sm' })      { return <svg className={SZ[size] || SZ.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg> }
 function GradebookIcon({ size = 'sm' }) { return <svg className={SZ[size] || SZ.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg> }
 function SubjectIcon({ size = 'sm' })   { return <svg className={SZ[size]} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> }

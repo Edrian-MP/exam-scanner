@@ -850,7 +850,10 @@ if ($path === '/scanner/status') {
     if ($owner !== null) {
         unset($state['last_output'], $state['last_scan_at']);
         if (!scan_session_owned_by((string) ($state['active_session_id'] ?? ''), $owner)) {
-            unset($state['active_session_id'], $state['batch_running'], $state['stop_requested'], $state['waiting_for_paper']);
+            unset(
+                $state['active_session_id'], $state['batch_running'], $state['stop_requested'],
+                $state['waiting_for_paper'], $state['activity'], $state['feed_attempt'], $state['feed_max_attempts']
+            );
         }
         if (!scan_session_owned_by((string) ($state['last_batch_session_id'] ?? ''), $owner)) {
             unset($state['last_batch_session_id'], $state['last_batch_reason'], $state['last_batch_message']);

@@ -14,7 +14,7 @@ logic.
 | --- | --- |
 | `Dockerfile`, `deploy/render/apache.conf`, `deploy/render/api-router.php`, `deploy/render/start-preview.sh` | Production React build, Apache routing, Authorization header forwarding, database startup and health checks. |
 | `backend/sql/postgres.sql`, `backend/sql/educator-sessions.sql`, `backend/api/lib/db.php`, `backend/api/lib/educator_session.php` | PostgreSQL schema and connectivity, educator login, session ownership. |
-| `backend/sql/online-scanner.sql`, `backend/api/lib/online_scanner.php` | Scanner pairing, private device authentication, queued jobs, duplicate upload protection and disconnect recovery. |
+| `backend/sql/online-scanner.sql`, [feeder activity migration](../../backend/sql/20261124094928_online_scanner_feeder_activity.sql), `backend/api/lib/online_scanner.php` | Scanner pairing, private device authentication, queued jobs, live feeder progress, duplicate upload protection and disconnect recovery. |
 | `backend/api/index.php`, `backend/api/config.php` | Exam lookup, scan staging and review routes for the online transport. The online mode is selected on the server. |
 | `src/App.jsx`, `src/LmsDashboard.jsx` | Pairing controls and polling for scanner status and reviewed sheets. |
 | `scanner-service/online_scanner.py` | Outbound job polling, authenticated answer key requests and scan uploads. |
@@ -53,10 +53,11 @@ backend stores its hash, and replacing the code revokes the previous code.
 1. Obtain approval for live changes. Record the currently live Render deploy ID,
    branch, environment flag and Git commit. Retain a backup of the database and
    the physical system through its existing backup procedures.
-2. Confirm the live database already has `postgres.sql` and
-   `educator-sessions.sql`. Apply only `backend/sql/online-scanner.sql` to the
-   existing database. It adds two private tables and their indexes and grants.
-   Verify that the app role has access and the two tables are present.
+2. For a new database, apply `postgres.sql`, `educator-sessions.sql`,
+   `online-scanner.sql`, and the [feeder activity migration](../../backend/sql/20261124094928_online_scanner_feeder_activity.sql) in that
+   order. For an existing deployment, apply only the pending migrations.
+   Verify the scanner tables and the new `activity` and `feed_attempt` columns
+   are accessible to the app role.
 3. Point the existing Render service to the reviewed integration branch and
    enable `EXAM_ONLINE_SCANNER=1`. Deploy the reviewed commit. Confirm that
    `/healthz` returns HTTP 200, the deployed commit matches, and the website loads.

@@ -180,6 +180,12 @@ body {
   border-color: rgb(245 158 11 / 0.6) !important;
 }
 
+.night-mode .scan-activity-retry {
+  background-color: rgb(120 53 15 / 0.34) !important;
+  border-color: rgb(245 158 11 / 0.6) !important;
+  color: #fde68a !important;
+}
+
 .night-mode .scan-last-label,
 .night-mode .scan-last-score {
   color: #cbd5e1 !important;

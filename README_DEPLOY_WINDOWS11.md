@@ -78,14 +78,14 @@ Check service status:
 ### Online scanner mode
 
 Use this mode on the Windows PC connected to the Epson and Arduino. The site
-must have the PostgreSQL schema scripts installed in order (`postgres.sql`,
-`educator-sessions.sql`, then `online-scanner.sql`) and
-`EXAM_ONLINE_SCANNER=1` set on its server. For an existing site, apply just
-`online-scanner.sql` after the other two scripts are installed.
+must have the PostgreSQL schema and scanner migrations described in the
+[Render deployment guide](deploy/render/README.md#deploy-and-verify), with
+`EXAM_ONLINE_SCANNER=1` set on its server.
 
 1. Stop the local Python scanner service before switching modes. Confirm the
    Windows scanner driver, Python packages (`requests`, `pywin32`, `Pillow`,
-   `opencv-python`, `pyserial`), and Arduino COM port on this PC.
+   `opencv-python`, `pyserial`), and Arduino COM port on this PC. The scanner
+   service detects the feeder by USB ID or description and uses `COM4` as a fallback.
 2. Sign in at [Exam Scanner](https://exam-scanner.onrender.com/), open a subject and its **Scan** tab,
    and select **Pair scanner PC** to get the code for your educator account.
 3. From the source folder on the scanner PC, run

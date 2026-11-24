@@ -68,7 +68,7 @@ function online_scanner_job(int $owner, ?string $sessionId = null, bool $activeO
 function online_scanner_finish(int $owner, string $sessionId, string $reason, string $message): void
 {
     online_scanner_query(
-        "UPDATE online_scan_jobs SET phase = 'finished', waiting_for_paper = false,
+        "UPDATE online_scan_jobs SET phase = 'finished', waiting_for_paper = false, activity = NULL, feed_attempt = NULL,
              finish_reason = :reason, finish_message = :message
          WHERE educator_id = :owner AND session_id = :session_id AND phase <> 'finished'",
         ['owner' => $owner, 'session_id' => $sessionId, 'reason' => $reason, 'message' => $message]
@@ -118,6 +118,8 @@ function online_scanner_status(int $owner, ?string $sessionId): array
         'single' => $job !== null && (bool) $job['single_sheet'],
         'stop_requested' => $running && $job['phase'] === 'stopping',
         'waiting_for_paper' => $running && (bool) $job['waiting_for_paper'],
+        'activity' => $running ? $job['activity'] : null,
+        'feed_attempt' => $running ? $job['feed_attempt'] : null,
         'last_batch_session_id' => $running ? null : ($job['session_id'] ?? null),
         'last_batch_reason' => $running || $job === null ? null :
             ($job['phase'] === 'finished' ? $job['finish_reason'] : 'disconnected'),
@@ -236,13 +238,23 @@ function online_scanner_poll(int $owner, string $worker, array $payload): array
         );
         return [200, ['ok' => true, 'data' => ['job' => null]]];
     }
+    $reportMatchesJob = ($payload['active_session_id'] ?? null) === $sessionId;
+    $activity = $reportMatchesJob ? ($payload['activity'] ?? null) : null;
+    if (!in_array($activity, ['connecting_feeder', 'feeding', 'scanning', 'processing'], true)) {
+        $activity = null;
+    }
+    $feedAttempt = $payload['feed_attempt'] ?? null;
+    if ($activity !== 'feeding' || !is_int($feedAttempt) || $feedAttempt < 1 || $feedAttempt > 3) {
+        $feedAttempt = null;
+    }
     online_scanner_query(
         "UPDATE online_scan_jobs SET phase = CASE WHEN phase = 'queued' THEN 'scanning' ELSE phase END,
-             waiting_for_paper = :waiting WHERE educator_id = :owner AND session_id = :session_id",
+             waiting_for_paper = :waiting, activity = :activity, feed_attempt = :feed_attempt
+         WHERE educator_id = :owner AND session_id = :session_id",
         [
             'owner' => $owner, 'session_id' => $sessionId,
-            'waiting' => ($payload['active_session_id'] ?? null) === $sessionId &&
-                ($payload['waiting_for_paper'] ?? null) === true ? 'true' : 'false',
+            'waiting' => $reportMatchesJob && ($payload['waiting_for_paper'] ?? null) === true ? 'true' : 'false',
+            'activity' => $activity, 'feed_attempt' => $feedAttempt,
         ]
     );
 

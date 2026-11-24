@@ -39,6 +39,11 @@ except Exception:
     _SERIAL_AVAILABLE = False
 
 try:
+    from serial.tools import list_ports  # type: ignore
+except Exception:
+    list_ports = None  # type: ignore
+
+try:
     import pythoncom        # type: ignore
     import win32com.client  # type: ignore
     _WIA_AVAILABLE = True
@@ -76,7 +81,13 @@ except Exception as _exc:  # never let logging setup stop the service
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 PHP_API_BASE      = "http://localhost/exam-scanner/backend/api"
-SERIAL_PORT       = "COM4"
+SERIAL_PORT       = "COM4"  # fallback; the Arduino's port is auto-detected by USB ID
+ARDUINO_USB_VIDS  = {0x2341, 0x2A03, 0x1A86, 0x0403, 0x10C4}  # Arduino, Arduino.org, CH340, FTDI, CP210x
+FEEDER_READY_TIMEOUT  = 6.0  # seconds to wait for the sketch's READY line after opening the port
+FEEDER_PING_TIMEOUT   = 2.0  # seconds to wait for a reply to the STOP ping
+FEEDER_OPEN_ATTEMPTS  = 3    # open/reset attempts before reporting the feeder as not responding
+FEED_REPLY_TIMEOUT    = 5.0  # the sketch answers FEED with FEED_STARTED immediately
+FEED_MAX_ATTEMPTS     = 3    # must match MAX_FEED_ATTEMPTS in the Arduino sketch
 SERIAL_BAUD       = 9600
 SERIAL_TIMEOUT    = 70      # total seconds to wait for pre-feed clear + Arduino feed retries
 SERIAL_READ_TIMEOUT = 0.2   # short serial poll interval so Stop Scan can interrupt FEED waits
@@ -105,6 +116,13 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # pinched the sheet's tail in the feeder roller, so landscape is back in use.
 LANDSCAPE_FEED_MODE = True
 FINAL_FEED_STATUSES = {"SHEET_FED", "NO_PAPER", "PAPER_JAM", "FEED_CANCELLED"}
+# The sketch only says SHEET_FED when its scanner-slot sensor sees the sheet. If
+# that sensor misses it, the sketch would retry, and each retry's feed-in step
+# runs the roller backwards and pulls the sheet out of the scanner again. So if
+# the sensor hasn't fired this long after an attempt starts (feed-in + brake +
+# 3 s transfer + ease-off is ~4.5 s), stop the feeder and ask the scanner
+# itself whether it has the sheet.
+SENSOR_MISS_AFTER     = 5.5
 
 
 # ── Global state ──────────────────────────────────────────────────────────────
@@ -118,6 +136,11 @@ class ScannerState:
         self.last_batch_message: str | None = None
         self.active_session_id: str | None = None
         self.waiting_for_paper: bool = False
+        self.feeder_ok: bool | None = None  # None = not checked yet
+        # what the batch is doing right now, for the UI: connecting_feeder |
+        # feeding | scanning | processing | None; feed_attempt is the Arduino's try number
+        self.activity: str | None = None
+        self.feed_attempt: int | None = None
         self._batch_thread: threading.Thread | None = None
         self._stop_flag   = threading.Event()
         self._batch_lock  = threading.Lock()
@@ -127,7 +150,12 @@ class ScannerState:
         return _WIA_AVAILABLE
 
     def arduino_connected(self) -> bool:
-        return _SERIAL_AVAILABLE
+        return _SERIAL_AVAILABLE and feeder_port_present() and self.feeder_ok is not False
+
+    def set_activity(self, activity: str | None, feed_attempt: int | None = None) -> None:
+        with self._batch_lock:
+            self.activity = activity
+            self.feed_attempt = feed_attempt
 
     def request_stop(self) -> None:
         self._stop_flag.set()
@@ -160,6 +188,8 @@ class ScannerState:
         with self._batch_lock:
             self._batch_running = False
             self.active_session_id = None
+            self.activity = None
+            self.feed_attempt = None
             self._batch_thread = None
             self._stop_flag.clear()
             self.last_batch_session_id = session_id
@@ -189,6 +219,8 @@ class ScannerState:
                 "active_session_id": self.active_session_id,
                 "stop_requested": self._stop_flag.is_set(),
                 "waiting_for_paper": self.waiting_for_paper,
+                "activity": self.activity,
+                "feed_attempt": self.feed_attempt,
                 "last_batch_session_id": self.last_batch_session_id,
                 "last_batch_reason": self.last_batch_reason,
                 "last_batch_message": self.last_batch_message,
@@ -312,6 +344,153 @@ def scan_sheet_mock(sheet_index: int) -> "Image.Image":
 
 # ── Arduino feeder ────────────────────────────────────────────────────────────
 
+class FeederNotRespondingError(RuntimeError):
+    """The Arduino feeder's port opened but the sketch never answered."""
+
+    def __init__(self, port: str, detail: str) -> None:
+        super().__init__(f"Feeder on {port} not responding: {detail}")
+        self.port = port
+        self.detail = detail
+
+
+# Only one thing may hold the feeder's COM port at a time (startup check vs. batch).
+_FEEDER_PORT_LOCK = threading.Lock()
+
+
+def find_feeder_port() -> str:
+    """Return the Arduino's COM port, found by USB ID so a renumbered port still works."""
+    if list_ports is not None:
+        try:
+            ports = list(list_ports.comports())
+        except Exception as exc:
+            logger.debug("Could not list COM ports: %s", exc)
+            ports = []
+        for p in ports:
+            if p.vid in ARDUINO_USB_VIDS:
+                return p.device
+        for p in ports:
+            if "arduino" in (p.description or "").lower():
+                return p.device
+    return SERIAL_PORT
+
+
+def feeder_port_present() -> bool:
+    """Check for a detected Arduino or configured fallback port without opening it."""
+    if list_ports is None:
+        return _SERIAL_AVAILABLE
+    try:
+        return any(
+            p.vid in ARDUINO_USB_VIDS
+            or "arduino" in (p.description or "").lower()
+            or p.device.upper() == SERIAL_PORT.upper()
+            for p in list_ports.comports()
+        )
+    except Exception:
+        return False
+
+
+def _read_feeder_line(ser: Any) -> str:
+    return ser.readline().decode("utf-8", errors="ignore").strip()
+
+
+def _wait_for_feeder_line(ser: Any, wanted: set[str], timeout: float) -> str | None:
+    """Read lines until one in `wanted` arrives; None on timeout or stop request."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if STATE.should_stop():
+            return None
+        line = _read_feeder_line(ser)
+        if not line:
+            continue
+        logger.info("Arduino feeder: %s", line)
+        if line in wanted:
+            return line
+    return None
+
+
+def open_feeder() -> Any:
+    """
+    Open the feeder's serial port and confirm the sketch is actually running.
+
+    Opening the port resets the Arduino. Nothing is sent until the sketch prints
+    READY: bytes that reach a Mega while its bootloader is still running keep it
+    in the bootloader, and the feeder then silently ignores every command. If the
+    board doesn't answer, it is reset again (DTR pulse) and the port reopened.
+
+    Returns the open port, or None if a stop was requested while connecting.
+    Raises FeederNotRespondingError when the Arduino never answers.
+    """
+    port = find_feeder_port()
+    detail = "no reply from the Arduino"
+    for attempt in range(1, FEEDER_OPEN_ATTEMPTS + 1):
+        if STATE.should_stop():
+            return None
+        ser = None
+        with _FEEDER_PORT_LOCK:
+            try:
+                ser = serial.Serial(port, SERIAL_BAUD, timeout=SERIAL_READ_TIMEOUT)
+                if attempt > 1:
+                    # explicit reset pulse in case opening the port didn't reset the board
+                    ser.dtr = False
+                    time.sleep(0.25)
+                    ser.reset_input_buffer()
+                    ser.dtr = True
+                ready = _wait_for_feeder_line(ser, {"READY"}, FEEDER_READY_TIMEOUT)
+                if ready is None and not STATE.should_stop():
+                    # board didn't reset (or READY was missed): ping it instead.
+                    # STOP is a no-op when idle and is answered with FEED_CANCELLED.
+                    send_arduino_command(ser, "STOP")
+                    ready = _wait_for_feeder_line(ser, {"FEED_CANCELLED"}, FEEDER_PING_TIMEOUT)
+                if STATE.should_stop():
+                    ser.close()
+                    return None
+                if ready is not None:
+                    ser.reset_input_buffer()
+                    logger.info("Feeder ready on %s (attempt %d).", port, attempt)
+                    return ser
+                detail = "no reply from the Arduino"
+            except Exception as exc:
+                detail = str(exc)
+            if ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+        logger.warning(
+            "Feeder on %s did not respond (attempt %d/%d): %s",
+            port, attempt, FEEDER_OPEN_ATTEMPTS, detail,
+        )
+        time.sleep(1.0)
+    raise FeederNotRespondingError(port, detail)
+
+
+def feeder_error_message(port: str) -> str:
+    return (
+        f"The paper feeder (Arduino on {port}) is not responding. "
+        "Unplug the Arduino's USB cable, wait 5 seconds, plug it back in, then start the scan again."
+    )
+
+
+def check_feeder_on_startup() -> None:
+    """Confirm the feeder answers when the service starts, so a stuck board shows up right away."""
+    if not _SERIAL_AVAILABLE:
+        logger.warning("pyserial is not installed - the paper feeder cannot be used.")
+        return
+    if STATE.is_running:
+        return
+    try:
+        ser = open_feeder()
+    except FeederNotRespondingError as exc:
+        STATE.feeder_ok = False
+        logger.error("STARTUP CHECK: %s", feeder_error_message(exc.port))
+        return
+    if ser is not None:
+        STATE.feeder_ok = True
+        with _FEEDER_PORT_LOCK:
+            ser.close()
+        logger.info("STARTUP CHECK: paper feeder is responding.")
+
+
 def send_arduino_command(ser: Any, command: str) -> None:
     """Send a one-way command to the Arduino."""
     ser.write(f"{command}\n".encode("utf-8"))
@@ -320,14 +499,31 @@ def send_arduino_command(ser: Any, command: str) -> None:
 
 
 def feed_one_sheet(ser: Any) -> str:
-    """Send FEED command and return the Arduino's final feed status."""
+    """
+    Send FEED command and return the Arduino's final feed status.
+    Returns NO_RESPONSE if the sketch doesn't acknowledge FEED at all.
+    """
     if hasattr(ser, "reset_input_buffer"):
         ser.reset_input_buffer()
     logger.info("FEED sent")
+    STATE.set_activity("feeding")
     send_arduino_command(ser, "FEED")
 
-    deadline = time.time() + SERIAL_TIMEOUT
+    started_at = time.time()
+    got_reply = False
+    attempt_started_at: float | None = None
+    sensor_fired = False
+    deadline = started_at + SERIAL_TIMEOUT
     while time.time() < deadline:
+        if not got_reply and time.time() - started_at > FEED_REPLY_TIMEOUT:
+            logger.warning("Arduino did not acknowledge FEED within %.0fs.", FEED_REPLY_TIMEOUT)
+            return "NO_RESPONSE"
+        if (
+            attempt_started_at is not None
+            and not sensor_fired
+            and time.time() - attempt_started_at > SENSOR_MISS_AFTER
+        ):
+            return _stop_unconfirmed_feed(ser)
         if STATE.should_stop():
             logger.info("Stop requested during Arduino feed wait; sending STOP.")
             send_arduino_command(ser, "STOP")
@@ -344,7 +540,19 @@ def feed_one_sheet(ser: Any) -> str:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
         if not line:
             continue
+        got_reply = True
         logger.info("Arduino feeder: %s", line)
+        if line.startswith("FEED_ATTEMPT:"):
+            if attempt_started_at is not None and not sensor_fired:
+                # a retry has started: the slot sensor missed the sheet
+                return _stop_unconfirmed_feed(ser)
+            attempt_started_at = time.time()
+            try:
+                STATE.set_activity("feeding", int(line.split(":", 1)[1]))
+            except ValueError:
+                pass
+        if line.startswith("TRANSFER_MS:") or line == "SCANNER_SENSOR_DETECTED":
+            sensor_fired = True
         if line == "SHEET_FED":
             logger.info("SHEET_FED received")
             return line
@@ -353,6 +561,26 @@ def feed_one_sheet(ser: Any) -> str:
     logger.warning("Arduino feed timed out after %ss; sending STOP.", SERIAL_TIMEOUT)
     send_arduino_command(ser, "STOP")
     return "TIMEOUT"
+
+
+def _stop_unconfirmed_feed(ser: Any) -> str:
+    """Stop the feeder before it retries; the scanner decides whether the sheet arrived."""
+    logger.warning(
+        "Scanner-slot sensor did not see the sheet - stopping the feeder and "
+        "checking the scanner directly."
+    )
+    send_arduino_command(ser, "STOP")
+    stop_deadline = time.time() + 3.0
+    while time.time() < stop_deadline:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if not line:
+            continue
+        logger.info("Arduino feeder: %s", line)
+        if line == "SHEET_FED":
+            return "SHEET_FED"  # the sensor caught it at the last moment
+        if line in FINAL_FEED_STATUSES:
+            break
+    return "UNCONFIRMED"
 
 
 def push_sheet_into_scanner(ser: Any, taps: int) -> bool:
@@ -403,20 +631,27 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
             com_initialized = True
         sheet_index     = 0
         consecutive_bad = 0
+        feed_status = None
         answer_key_lookup = None if online is None else lambda code: online.fetch_answer_key(session_id, code)
 
-        if use_hardware and _SERIAL_AVAILABLE and not single:
+        if use_hardware and not single:
+            if not _SERIAL_AVAILABLE:
+                batch_reason = "feeder_error"
+                batch_message = "pyserial is not installed, so the paper feeder can't be used."
+                return
+            STATE.set_activity("connecting_feeder")
             try:
-                ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=SERIAL_READ_TIMEOUT)
-                time.sleep(2)  # wait for Arduino to boot
-                send_arduino_command(ser, "BEEP_START")
-            except Exception as exc:
-                logger.warning("Could not open serial port %s: %s", SERIAL_PORT, exc)
-                if online is not None:
-                    batch_reason = "hardware_error"
-                    batch_message = "Could not open the Arduino feeder port."
-                    return
-                ser = None
+                ser = open_feeder()
+            except FeederNotRespondingError as exc:
+                logger.error("%s", exc)
+                STATE.feeder_ok = False
+                batch_reason = "feeder_error"
+                batch_message = feeder_error_message(exc.port)
+                return
+            if ser is None:
+                return  # stop requested while connecting
+            STATE.feeder_ok = True
+            send_arduino_command(ser, "BEEP_START")
 
         while not STATE.should_stop():
             sheet_index += 1
@@ -424,6 +659,28 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
             # 1. Feed one sheet (Arduino or no-op in mock mode)
             if ser is not None:
                 feed_status = feed_one_sheet(ser)
+                if feed_status == "NO_RESPONSE":
+                    # the board stopped answering mid-session: reset it and try once more
+                    logger.warning("Feeder stopped answering - reconnecting.")
+                    ser.close()
+                    ser = None
+                    STATE.set_activity("connecting_feeder")
+                    try:
+                        ser = open_feeder()
+                    except FeederNotRespondingError as exc:
+                        logger.error("%s", exc)
+                        STATE.feeder_ok = False
+                        batch_reason = "feeder_error"
+                        batch_message = feeder_error_message(exc.port)
+                        break
+                    if ser is None:
+                        break  # stop requested while reconnecting
+                    feed_status = feed_one_sheet(ser)
+                    if feed_status == "NO_RESPONSE":
+                        STATE.feeder_ok = False
+                        batch_reason = "feeder_error"
+                        batch_message = feeder_error_message(find_feeder_port())
+                        break
                 if feed_status == "FEED_CANCELLED":
                     logger.info("Arduino feed cancelled - stopping batch.")
                     batch_reason = "stopped"
@@ -435,7 +692,7 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
                     batch_message = "No paper in feeder. Batch scan complete."
                     send_arduino_command(ser, "BEEP_FINISH")
                     break
-                if feed_status != "SHEET_FED":
+                if feed_status not in ("SHEET_FED", "UNCONFIRMED"):
                     logger.error("Feeder failed with status %s - stopping batch.", feed_status)
                     batch_reason = "feeder_error"
                     batch_message = f"Feeder failed with status {feed_status}."
@@ -450,6 +707,7 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
 
             # 2. Scan — poll until paper is inserted, timeout, or stop requested.
             pil_image = None
+            STATE.set_activity("scanning")
             if use_hardware and _WIA_AVAILABLE and _PIL_AVAILABLE:
                 wait_timeout = SINGLE_WAIT_TIMEOUT if single else ADF_WAIT_TIMEOUT
                 wait_deadline = time.time() + wait_timeout
@@ -522,6 +780,16 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
                             push_sheet_into_scanner(ser, taps)
                             time.sleep(HANDOFF_NUDGE_SETTLE)
                             continue
+                        if ser is not None and feed_status == "UNCONFIRMED":
+                            # neither the slot sensor nor the scanner has the sheet
+                            logger.error("Sheet %d never reached the scanner.", sheet_index)
+                            batch_reason = "feeder_error"
+                            batch_message = (
+                                f"Sheet {sheet_index} did not reach the scanner. Check that the "
+                                "sheet isn't stuck between the feeder and the scanner, then start again."
+                            )
+                            STATE.waiting_for_paper = False
+                            break
                         # ADF empty — wait for the user to insert the next paper
                         if time.time() >= wait_deadline:
                             logger.info(
@@ -553,6 +821,7 @@ def _batch_loop(session_id: str, use_hardware: bool, single: bool = False, onlin
                 break  # ADF timed out, stop requested, or hard scan error posted above
 
             # 3. OMR processing
+            STATE.set_activity("processing")
             try:
                 result = omr.process_sheet(pil_image, sheet_index, PHP_API_BASE, answer_key_lookup)
                 result_dict = omr.sheet_result_to_dict(result)
@@ -676,10 +945,15 @@ class Handler(BaseHTTPRequestHandler):
                     "scanner": {
                         "connected":         STATE.scanner_connected(),
                         "arduino":           STATE.arduino_connected(),
+                        "arduino_port":      find_feeder_port(),
+                        "feeder_responding": STATE.feeder_ok,
                         "batch_running":     state_snapshot["batch_running"],
                         "active_session_id": state_snapshot["active_session_id"],
                         "stop_requested":    state_snapshot["stop_requested"],
                         "waiting_for_paper": state_snapshot["waiting_for_paper"],
+                        "activity":          state_snapshot["activity"],
+                        "feed_attempt":      state_snapshot["feed_attempt"],
+                        "feed_max_attempts": FEED_MAX_ATTEMPTS,
                         "last_batch_session_id": state_snapshot["last_batch_session_id"],
                         "last_batch_reason": state_snapshot["last_batch_reason"],
                         "last_batch_message": state_snapshot["last_batch_message"],
@@ -731,7 +1005,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "error": "session_id is required"})
                 return
 
-            use_hw = _WIA_AVAILABLE  # serial (Arduino) is optional; WIA drives hardware mode
+            use_hw = _WIA_AVAILABLE  # WIA selects hardware mode; batch scans also require serial.
             single = bool(payload.get("single", False))
             if not start_batch(session_id, use_hw, single):
                 self._send(409, {"ok": False, "error": "A batch scan is already running"})
@@ -804,14 +1078,14 @@ def run_online(api_url: str, pairing: bool, simulate: bool) -> None:
         if simulate:
             return True, True
         scanner_ready = _WIA_AVAILABLE and _PIL_AVAILABLE and omr._CV2_AVAILABLE
-        if not _SERIAL_AVAILABLE:
-            return scanner_ready, False
-        from serial.tools.list_ports import comports
-        return scanner_ready, any(port.device.upper() == SERIAL_PORT.upper() for port in comports())
+        # A port that is present can be tried again after a USB reconnect.
+        return scanner_ready, _SERIAL_AVAILABLE and feeder_port_present()
 
     # Bind the local scanner port too, so local and online modes cannot drive the same hardware.
     with ScannerServer(("127.0.0.1", 0 if simulate else 5001), Handler, bind_and_activate=False) as port_guard:
         port_guard.server_bind()
+        if not simulate and feeder_port_present():
+            check_feeder_on_startup()
         logger.info("Connecting scanner service to the website.")
         client.run(STATE, hardware_status, lambda session_id, single: start_batch(session_id, not simulate, single, client))
 
@@ -837,6 +1111,7 @@ def main() -> None:
     port = 5001
     server = ScannerServer((host, port), Handler)
     logger.info("Scanner service running at http://%s:%d", host, port)
+    threading.Thread(target=check_feeder_on_startup, name="feeder-check", daemon=True).start()
     server.serve_forever()
 
 
