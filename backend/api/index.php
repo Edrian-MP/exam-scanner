@@ -430,7 +430,7 @@ function ensure_educators_schema(): void
         $countStmt = db()->query('SELECT COUNT(*) AS c FROM educators');
         $countRow = $countStmt->fetch();
         $count = (int) ($countRow['c'] ?? 0);
-        if ($count < 1) {
+        if ($count < 1 && getenv('EXAM_DISABLE_DEFAULT_EDUCATOR') !== '1') {
             $insert = db()->prepare(
                 'INSERT INTO educators (surname, email, password_hash, is_active)
                  VALUES (:surname, :email, :password_hash, 1)'
