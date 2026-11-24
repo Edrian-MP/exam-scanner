@@ -33,7 +33,8 @@ cleanup() {
     if [[ -n "$apache_pid" ]]; then
         kill -TERM "$apache_pid" 2>/dev/null || true
     fi
-    kill -TERM "$database_pid" 2>/dev/null || true
+    mariadb-admin --protocol=socket --socket="$socket" --user=root --connect-timeout=2 shutdown >/dev/null 2>&1 \
+        || kill -TERM "$database_pid" 2>/dev/null || true
     wait || true
 }
 trap cleanup EXIT
@@ -43,9 +44,6 @@ database_ready=false
 for attempt in {1..45}; do
     if mariadb --protocol=socket --socket="$socket" --user=root -e 'SELECT 1' >/dev/null 2>&1; then
         database_ready=true
-        break
-    fi
-    if ! kill -0 "$database_pid" 2>/dev/null; then
         break
     fi
     sleep 1
