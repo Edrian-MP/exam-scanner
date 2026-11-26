@@ -1,0 +1,79 @@
+.preview-header {
+  border-bottom: 1px solid #dbe7f0;
+  background: #fff;
+}
+
+.preview-header-inner,
+.preview-intro {
+  width: min(100%, 80rem);
+  margin-inline: auto;
+  padding-inline: clamp(1rem, 4vw, 2rem);
+}
+
+.preview-header-inner,
+.preview-brand {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+}
+
+.preview-header-inner {
+  justify-content: space-between;
+  min-height: 4.5rem;
+}
+
+.preview-symbol {
+  display: grid;
+  width: 2.4rem;
+  height: 2.4rem;
+  place-items: center;
+  border-radius: .65rem;
+  background: #0369a1;
+  color: #fff;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+}
+
+.preview-name {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.preview-label {
+  color: #475569;
+  font-size: .875rem;
+}
+
+.preview-live {
+  flex-shrink: 0;
+  border: 1px solid #bae6fd;
+  border-radius: .65rem;
+  padding: .55rem .8rem;
+  color: #075985;
+  background: #f0f9ff;
+  font-size: .875rem;
+  font-weight: 600;
+}
+
+.preview-live:hover { background: #e0f2fe; }
+.preview-live:focus-visible { outline: 2px solid #0369a1; outline-offset: 3px; }
+
+.preview-intro { padding-top: clamp(1.75rem, 5vw, 3.25rem); }
+
+.preview-intro h1 {
+  color: #0f172a;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: clamp(1.9rem, 5vw, 2.65rem);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -.045em;
+}
+
+.preview-intro p { margin-top: .6rem; color: #475569; }
+
+.preview-intro .preview-notice {
+  border-left: 3px solid #0284c7;
+  padding: .55rem .75rem;
+  background: #f0f9ff;
+  color: #075985;
+}

@@ -1,7 +1,6 @@
 ﻿import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import ScanReview from './ScanReview'
 import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
-import * as XLSX from 'xlsx'
 
 const MANUAL_ANSWER_GRID_STYLE = {
   gridTemplateRows: 'repeat(5, minmax(2.75rem, auto))',
@@ -34,6 +33,7 @@ function parseRowsFromSheet(rows) {
 }
 
 async function parseXlsx(file) {
+  const XLSX = await import('xlsx')
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -343,8 +343,9 @@ function examExportFilename(kind, exam, subject) {
   return `${kind}-${subjectPart}-${examPart}-${new Date().toISOString().slice(0, 10)}.xlsx`
 }
 
-function exportExamResultsWorkbook(exam, subject) {
+async function exportExamResultsWorkbook(exam, subject) {
   if (!exam) return
+  const XLSX = await import('xlsx')
   const total = Number(exam.total_items || 0)
   const rows = exam.results || []
   const stats = describeScores(exam)
@@ -400,8 +401,9 @@ function exportExamResultsWorkbook(exam, subject) {
   XLSX.writeFile(workbook, examExportFilename('exam-results', exam, subject))
 }
 
-function exportItemAnalysisWorkbook(exam, subject) {
+async function exportItemAnalysisWorkbook(exam, subject) {
   if (!exam) return
+  const XLSX = await import('xlsx')
   const analysis = computeItemAnalysis(exam)
   const optionHeaders = [...analysis.options, 'Blank']
 
@@ -1687,7 +1689,8 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
   const [scannerCode, setScannerCode] = useState('')
   const [pairingError, setPairingError] = useState('')
   const [pairingBusy, setPairingBusy] = useState(false)
-  const sessionStatus     = scan.scanSession?.status ?? null   // null | 'scanning' | 'stopping' | 'review'
+  const isSampleForSubject = !scan.preview || scan.scanSession?.examId === templates[0]?.id
+  const sessionStatus = isSampleForSubject ? (scan.scanSession?.status ?? null) : null
   const stagedSheets      = scan.stagedSheets ?? []
   const typedStudentCode  = String(scan.gradeForm?.student_code || '').trim()
 
@@ -1859,7 +1862,7 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
             : 'border-amber-200 bg-amber-50 text-amber-700'
         }`}>
           <span className={`h-2 w-2 rounded-full ${scannerConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
-          {scannerConnected ? 'Scanner ready' : 'Scanner not connected'}
+          {scan.preview ? 'Demo scanner' : scannerConnected ? 'Scanner ready' : 'Scanner not connected'}
         </span>
       </div>
 
@@ -1900,29 +1903,32 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
         <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
           <p className="text-xs font-semibold text-slate-700">Batch scan workflow</p>
           <p className="mt-0.5 text-xs text-slate-500">
-            Load answer sheets into the feeder, then start scanning. Each sheet is read, graded,
-            and queued for review. The exam code and student code are read from the bubbled grid.
+            {scan.preview
+              ? 'Review sample sheets and see how the app flags an unmarked answer.'
+              : 'Load answer sheets into the feeder, then start scanning. Each sheet is read, graded, and queued for review. The exam code and student code are read from the bubbled grid.'}
           </p>
         </div>
         <button
           type="button"
-          onClick={scan.onStartBatchScan}
+          onClick={scan.preview ? () => scan.onStartBatchScan(templates[0]) : scan.onStartBatchScan}
           disabled={scan.busy || pairingBusy || !scannerConnected || !feederReady}
           className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {scan.busy ? <><SpinIcon /> Starting…</> : <><ScanIcon /> Start Batch Scan</>}
+          {scan.busy ? <><SpinIcon /> Starting…</> : <><ScanIcon /> {scan.preview ? 'Simulate Batch Scan' : 'Start Batch Scan'}</>}
         </button>
         <button
           type="button"
-          onClick={scan.onStartSingleScan}
+          onClick={scan.preview ? () => scan.onStartSingleScan(templates[0]) : scan.onStartSingleScan}
           disabled={scan.busy || pairingBusy || !scannerConnected}
           className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <ScanIcon /> Single Scan (manual feed)
+          <ScanIcon /> {scan.preview ? 'Simulate Single Scan' : 'Single Scan (manual feed)'}
         </button>
-        <p className="text-xs text-slate-500">
-          Single Scan skips the feeder: insert one sheet into the scanner by hand to test the checking.
-        </p>
+        {!scan.preview && (
+          <p className="text-xs text-slate-500">
+            Single Scan skips the feeder: insert one sheet into the scanner by hand to test the checking.
+          </p>
+        )}
         {!scannerConnected && (
           <p className="text-xs text-amber-700">Scanner service must be running and connected.</p>
         )}
@@ -1932,18 +1938,20 @@ function ScanCenterTab({ scan, templates = [], students = [], manualFocusToken =
       </section>
 
       {/* Manual submission toggle */}
-      <div>
-        <button
-          type="button"
-          onClick={() => setShowManual((v) => !v)}
-          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800 transition"
-        >
-          <span>{showManual ? '▾' : '▸'}</span>
-          Manual Entry {showManual ? '(hide)' : '(show)'}
-        </button>
-      </div>
+      {!scan.preview && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowManual((v) => !v)}
+            className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800 transition"
+          >
+            <span>{showManual ? '▾' : '▸'}</span>
+            Manual Entry {showManual ? '(hide)' : '(show)'}
+          </button>
+        </div>
+      )}
 
-      {showManual && (
+      {!scan.preview && showManual && (
         <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5">
           <form onSubmit={scan.onGrade} className="space-y-3">
             {manualContext?.activityTitle && manualContext?.studentCode && (
@@ -3232,7 +3240,7 @@ export default function LmsDashboard({ scanCenter = null, educator = null }) {
               <ExamResultsTab
                 exams={examResults}
                 selectedSubject={selectedSubject}
-                canScan={hasScanCenter}
+                canScan={hasScanCenter && !scan.preview}
                 onScanStudent={onOpenPendingActivity}
               />
             )}
